@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phony — iOS text &amp; notification mockups</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Phony<span>iOS mockups for edits</span></div>
+    <nav class="seg" id="modeTabs">
+      <button data-mode="chat">Messages</button>
+      <button data-mode="notif">Notifications</button>
+    </nav>
+    <div class="seg small" id="themeSeg">
+      <button data-theme="light">Light</button>
+      <button data-theme="dark">Dark</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="panel" id="panel"></aside>
+
+    <section class="stage">
+      <div class="canvas" id="canvas">
+        <div class="scaler" id="scaler"><div id="mockHost"></div></div>
+      </div>
+      <div class="playbar anim-only">
+        <button class="icon-btn" id="restartBtn" title="Restart">⏮</button>
+        <button class="icon-btn" id="playBtn" title="Play / pause">❚❚</button>
+        <input type="range" id="scrub" min="0" max="1000" value="0">
+        <span class="dims" id="tLabel">0.0 / 0.0s</span>
+        <span class="dims" id="animStatus"></span>
+      </div>
+      <div class="exportbar">
+        <div class="seg small" id="animSeg">
+          <button data-anim="off">Still</button>
+          <button data-anim="on">Animated</button>
+        </div>
+        <label class="field inline">Size
+          <select id="scaleSel">
+            <option value="2">2×</option>
+            <option value="3">3×</option>
+            <option value="4">4×</option>
+          </select>
+        </label>
+        <label class="field inline">Background
+          <select id="bgSel">
+            <option value="transparent">Transparent</option>
+            <option value="theme">Solid (theme)</option>
+            <option value="green">Green screen</option>
+          </select>
+        </label>
+        <label class="field inline anim-only">FPS
+          <select id="fpsSel">
+            <option value="24">24</option>
+            <option value="30">30</option>
+            <option value="60">60</option>
+          </select>
+        </label>
+        <span class="dims" id="dims"></span>
+        <div class="spacer"></div>
+        <div id="exportBtns" class="export-btns"></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="offscreen" aria-hidden="true"></div>
+  <div class="toast" id="toast"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

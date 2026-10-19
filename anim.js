@@ -1,0 +1,340 @@
+import { domToCanvas } from 'https://cdn.jsdelivr.net/npm/modern-screenshot@4.7.0/dist/index.mjs';
+
+/* Animations are built from a few DOM captures per step, then composited on a canvas
+   frame by frame — so preview playback and export are fast and identical. */
+
+// modern-screenshot awaits img.decode() on every image. In a hidden or covered tab that promise
+// never settles, so each capture sat out the library's 30 s timeout. Images are already loaded
+// by the time it asks and drawImage decodes synchronously, so skip decode() while capturing.
+const nativeDecode = HTMLImageElement.prototype.decode;
+let capturing = 0;
+HTMLImageElement.prototype.decode = function decode() {
+  return capturing ? Promise.resolve() : nativeDecode.call(this);
+};
+export async function noDecode(fn) {
+  capturing++;
+  try { return await fn(); } finally { capturing--; }
+}
+
+// Hidden tabs run toBlob on throttled ~1 s wake-ups; toDataURL is synchronous.
+export async function encodePNG(cv) {
+  if (!document.hidden) {
+    const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+    if (blob) return new Uint8Array(await blob.arrayBuffer());
+  }
+  const s = atob(cv.toDataURL('image/png').split(',')[1] || '');
+  const a = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i);
+  return a;
+}
+
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp01 = (p) => Math.max(0, Math.min(1, p));
+const easeOut = (p) => 1 - (1 - clamp01(p)) ** 3;
+const easeIn = (p) => clamp01(p) ** 2.4;
+// damped spring: ~11.5% overshoot, settles by p = 1
+const spring = (p) => (p >= 1 ? 1 : 1 - Math.exp(-7 * p) * Math.cos(9 * p));
+const softSpring = (p) => (p >= 1 ? 1 : 1 - Math.exp(-6.5 * p) * Math.cos(6.5 * p));
+
+function stale() { return Object.assign(new Error('stale'), { stale: true }); }
+
+function newStage() {
+  const d = document.createElement('div');
+  document.getElementById('offscreen').appendChild(d);
+  return d;
+}
+
+async function mountIn(stage, html) {
+  stage.innerHTML = html;
+  const el = stage.firstElementChild;
+  const loaded = (img) => img.complete || new Promise((r) => { img.onload = img.onerror = r; setTimeout(r, 3000); });
+  await Promise.all([...el.querySelectorAll('img')].map(loaded));
+  return el;
+}
+
+async function capture(el, scale) {
+  await document.fonts.ready;
+  return noDecode(() => domToCanvas(el, { scale, backgroundColor: null }));
+}
+
+function rel(el, root) {
+  const a = el.getBoundingClientRect(), b = root.getBoundingClientRect();
+  return { x: a.left - b.left, y: a.top - b.top, w: a.width, h: a.height };
+}
+
+// Keep only rows [y, y + h) (pt) of a capture and free the full-size one straight away —
+// long threads would otherwise hold several full-height canvases per step.
+function crop(cv, scale, y, h) {
+  const sy = Math.min(cv.height - 1, Math.max(0, Math.floor(y * scale)));
+  const sh = Math.max(1, Math.min(cv.height, Math.ceil((y + h) * scale)) - sy);
+  const out = document.createElement('canvas');
+  out.width = cv.width;
+  out.height = sh;
+  out.getContext('2d').drawImage(cv, 0, sy, cv.width, sh, 0, 0, cv.width, sh);
+  cv.width = cv.height = 0;
+  return { img: out, y: sy };
+}
+
+/* ───────────── Messages ─────────────
+   d = { layout, anchor, steps:[{count,typing,keepStamps,hold}], contentHTML(step), chromeHTML(), bgFill, speed, endHold } */
+export async function buildChatAnim(d, scale, { onProgress, isStale } = {}) {
+  const stage = newStage();
+  try {
+    // phone chrome first, so every capture can be cropped to what can scroll through the thread
+    let W, H, clip = null, chrome = null;
+    if (d.layout === 'phone') {
+      const phone = await mountIn(stage, d.chromeHTML());
+      clip = rel(phone.querySelector('.thread'), phone);
+      chrome = await capture(phone, scale);
+      W = phone.offsetWidth;
+      H = phone.offsetHeight;
+    }
+
+    const all = [{ count: 0, typing: false, hold: 0.35 }, ...d.steps];
+    const frames = [];
+    let prevKeys = new Set(), prevRy = null, prevLastK = null, shared = null;
+
+    for (let i = 0; i < all.length; i++) {
+      if (isStale?.()) throw stale();
+      onProgress?.(i, all.length);
+      const root = await mountIn(stage, d.contentHTML(all[i]));
+      root.classList.add('dots-off');
+      const units = [...root.querySelectorAll('[data-k]')];
+      const keys = new Set(units.map((e) => e.dataset.k));
+      const fresh = units.filter((e) => !prevKeys.has(e.dataset.k) && e.dataset.k !== 'receipt');
+      const bubbles = fresh.filter((e) => e.classList.contains('m')); // pop from the tail corner
+      const stamps = fresh.filter((e) => !e.classList.contains('m')); // fade in place
+
+      let anchor = null;
+      const main = bubbles[bubbles.length - 1];
+      if (main) {
+        const r = rel(main.querySelector('.bub, .typing'), root);
+        anchor = main.classList.contains('me') ? { x: r.x + r.w, y: r.y + r.h } : { x: r.x, y: r.y + r.h };
+      }
+      // the receipt waits for its bubble: when it's new or has moved it fades in after the pop
+      const rcpt = root.querySelector('[data-k="receipt"]');
+      const ry = rcpt ? rel(rcpt, root).y : null;
+      const late = !!rcpt && ry !== prevRy;
+
+      const dotEls = [...root.querySelectorAll('.typing span')];
+      const dots = dotEls.map((s) => { const r = rel(s, root); return { x: r.x + r.w / 2, y: r.y + r.h / 2, r: r.w / 2 }; });
+      const dotColor = dotEls.length ? getComputedStyle(dotEls[0]).backgroundColor : null;
+
+      const h = root.offsetHeight;
+      const y = clip ? (h <= clip.h ? 0 : clip.h - h) : 0; // bubbles layout is placed after the loop
+      const prevY = frames.length ? frames[frames.length - 1].y : y;
+
+      const only = async (set) => {
+        units.forEach((e) => { e.style.visibility = set.includes(e) ? 'visible' : 'hidden'; });
+        return capture(root, scale);
+      };
+      // layers keep just the rows around their units (tapbacks sit ~20pt above a row)
+      const band = async (set) => {
+        const rs = set.map((e) => rel(e, root));
+        const y0 = Math.min(...rs.map((r) => r.y)) - 30, y1 = Math.max(...rs.map((r) => r.y + r.h)) + 30;
+        return crop(await only(set), scale, y0, y1 - y0);
+      };
+      const hidden = new Set(late ? [...fresh, rcpt] : fresh);
+      const baseCv = await only(units.filter((e) => !hidden.has(e)));
+      let base;
+      if (clip) {
+        // phone: only the rows that can pass through the clip during this step
+        base = crop(baseCv, scale, -Math.max(prevY, y), clip.h + Math.abs(prevY - y));
+      } else {
+        // bubbles: rows above the first unit that can still change match the final step, so keep
+        // only the rows from there down and draw the top from one shared full capture
+        const moving = [...fresh, rcpt, units.find((e) => e.dataset.k === prevLastK), root.querySelector('[data-k="typing"]')].filter(Boolean);
+        const cut = moving.length ? Math.max(0, Math.min(...moving.map((e) => rel(e, root).y)) - 30) : 0;
+        base = cut > 0 ? crop(baseCv, scale, cut, h - cut) : { img: baseCv, y: 0 };
+        if (i === all.length - 1) shared = await only(units);
+      }
+      const layer = bubbles.length ? await band(bubbles) : null;
+      const fade = stamps.length ? await band(stamps) : null;
+      const receipt = late ? await band([rcpt]) : null;
+
+      frames.push({
+        base, layer, fade, receipt, anchor, dots, dotColor, y, h,
+        w: root.offsetWidth,
+        inDur: i === 0 ? 0 : 0.45 / d.speed,
+        hold: all[i].hold / d.speed,
+      });
+      prevKeys = keys;
+      prevRy = ry;
+      const ms = units.filter((e) => e.classList.contains('m'));
+      prevLastK = ms.length ? ms[ms.length - 1].dataset.k : null;
+    }
+
+    if (!clip) {
+      W = frames[0].w;
+      H = Math.max(...frames.map((f) => f.h));
+      clip = { x: 0, y: 0, w: W, h: H };
+      frames.forEach((f) => { f.y = d.anchor === 'bottom' ? H - f.h : 0; });
+    }
+
+    let t = 0;
+    frames.forEach((f) => { f.start = t; t += f.inDur + f.hold; });
+    const duration = Math.max(0.5, t + d.endHold);
+
+    const at = (time) => {
+      let k = frames.length - 1;
+      for (let i = 0; i < frames.length; i++) {
+        if (time < frames[i].start + frames[i].inDur + frames[i].hold) { k = i; break; }
+      }
+      const f = frames[k];
+      return { k, p: f.inDur ? clamp01((time - f.start) / f.inDur) : 1 };
+    };
+
+    return {
+      width: W, height: H, scale, duration,
+      key(time) {
+        const { k, p } = at(time);
+        return p >= 1 && !frames[k].dots.length ? `c${k}` : null;
+      },
+      draw(ctx, time) {
+        const { k, p } = at(time);
+        const f = frames[k], prev = frames[k - 1] || f;
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        if (d.bgFill && !chrome) { ctx.fillStyle = d.bgFill; ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height); }
+        if (chrome) ctx.drawImage(chrome, 0, 0);
+        ctx.save();
+        // snap to device pixels: the header's .5px hairline makes clip.y fractional, and a
+        // half-pixel offset would blur the whole thread
+        const cx = Math.round(clip.x * scale), cy = Math.round(clip.y * scale);
+        ctx.beginPath();
+        ctx.rect(cx, cy, Math.round((clip.x + clip.w) * scale) - cx, Math.round((clip.y + clip.h) * scale) - cy);
+        ctx.clip();
+        const ox = cx;
+        const oy = Math.round((clip.y + lerp(prev.y, f.y, easeOut(p))) * scale);
+        const put = (l) => ctx.drawImage(l.img, ox, oy + l.y);
+        const fadeIn = (l, a) => { ctx.save(); ctx.globalAlpha = a; put(l); ctx.restore(); };
+
+        if (shared && f.base.y) ctx.drawImage(shared, 0, 0, shared.width, f.base.y, ox, oy, shared.width, f.base.y);
+        put(f.base);
+        if (f.fade) fadeIn(f.fade, Math.min(1, p * 2.5));
+        if (f.layer) {
+          ctx.save();
+          ctx.globalAlpha = Math.min(1, p * 2.5);
+          const s = 0.4 + 0.6 * spring(p);
+          const ax = ox + f.anchor.x * scale, ay = oy + f.anchor.y * scale;
+          ctx.translate(ax, ay);
+          ctx.scale(s, s);
+          ctx.translate(-ax, -ay);
+          put(f.layer);
+          if (f.dots.length) {
+            ctx.fillStyle = f.dotColor;
+            const base = ctx.globalAlpha;
+            f.dots.forEach((dot, i) => {
+              const v = 0.5 + 0.5 * Math.sin(time * 2 * Math.PI / 1.2 - i * 0.9);
+              ctx.globalAlpha = base * (0.35 + 0.65 * v);
+              ctx.beginPath();
+              ctx.arc(ox + dot.x * scale, oy + dot.y * scale, dot.r * scale * (0.9 + 0.12 * v), 0, Math.PI * 2);
+              ctx.fill();
+            });
+          }
+          ctx.restore();
+        }
+        if (f.receipt) fadeIn(f.receipt, clamp01((p - 0.6) / 0.4));
+        ctx.restore();
+      },
+    };
+  } finally {
+    stage.remove();
+  }
+}
+
+/* ───────────── Notifications ─────────────
+   Cards drop in from the top one at a time (bottom of the list first), pushing earlier ones down.
+   d = { layout, html, bgFill, speed, endHold, slideOut } */
+export async function buildNotifAnim(d, scale, { onProgress, isStale } = {}) {
+  const stage = newStage();
+  try {
+    const root = await mountIn(stage, d.html);
+    const W = root.offsetWidth, H = root.offsetHeight;
+    const pieceEls = d.layout === 'stack' ? [...root.querySelectorAll('.n-stack')] : [...root.querySelectorAll('.notif')];
+    const pieces = [];
+    for (let i = 0; i < pieceEls.length; i++) {
+      if (isStale?.()) throw stale();
+      onProgress?.(i, pieceEls.length);
+      const r = rel(pieceEls[i], root);
+      pieces.push({ ...r, img: await capture(pieceEls[i], scale) });
+    }
+    const n = pieces.length;
+    const P = n ? pieces[0].y : 0;
+    // the drop overshoots; without root padding (transparent bg) the bounce needs room below
+    const over = n ? Math.ceil(0.12 * (P + Math.max(...pieces.map((pc) => pc.h)) + 12)) : 0;
+    const pad = n ? Math.max(0, over - (H - (pieces[n - 1].y + pieces[n - 1].h))) : 0;
+    const inDur = 0.6 / d.speed, hold = 0.9 / d.speed, lead = 0.3;
+    const arrivals = pieces.map((_, i) => lead + i * (inDur + hold));
+    const allIn = n ? arrivals[n - 1] + inDur : lead;
+    const outStart = allIn + (d.slideOut ? Math.max(d.endHold, 0.2) : 0);
+    const outDur = 0.45 / d.speed;
+    const duration = Math.max(0.5, d.slideOut ? outStart + outDur + 0.3 : allIn + Math.max(d.endHold, 0.2));
+
+    const state = (time) => {
+      const a = arrivals.filter((s) => s <= time).length; // arrivals started
+      const p = a ? clamp01((time - arrivals[a - 1]) / inDur) : 1;
+      const q = d.slideOut ? clamp01((time - outStart) / outDur) : 0;
+      return { a, p, q };
+    };
+
+    return {
+      width: W, height: H + pad, scale, duration,
+      key(time) {
+        const { a, p, q } = state(time);
+        return p >= 1 && (q === 0 || q === 1) ? `n${a}-${q}` : null;
+      },
+      draw(ctx, time) {
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        if (d.bgFill) { ctx.fillStyle = d.bgFill; ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height); }
+        const { a, p, q } = state(time);
+        if (!a || q >= 1) return;
+        const j = n - a; // newest visible piece
+        const top = (m) => pieces[m].y;
+        const lift = -easeIn(q) * (H + 20);
+        ctx.save();
+        ctx.globalAlpha = 1 - easeIn(q) * 0.6;
+        for (let m = n - 1; m >= j; m--) {
+          const pc = pieces[m];
+          let y;
+          if (m === j) y = lerp(-pc.h - 12, P, spring(p));
+          else y = lerp(P + top(m) - top(j + 1), P + top(m) - top(j), softSpring(p));
+          y += lift;
+          ctx.save();
+          if (m === j) ctx.globalAlpha *= Math.min(1, p * 3);
+          ctx.drawImage(pc.img, Math.round(pc.x * scale), Math.round(y * scale));
+          ctx.restore();
+        }
+        ctx.restore();
+      },
+    };
+  } finally {
+    stage.remove();
+  }
+}
+
+/* ───────────── rendering frames ───────────── */
+
+export async function renderFrames(anim, fps, onProgress) {
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(anim.width * anim.scale);
+  cv.height = Math.round(anim.height * anim.scale);
+  const ctx = cv.getContext('2d');
+  const total = Math.max(1, Math.round(anim.duration * fps));
+  const frames = [];
+  let prevKey = null, prev = null;
+  for (let i = 0; i < total; i++) {
+    const t = i / fps;
+    const key = anim.key(t);
+    if (key && key === prevKey && prev) {
+      frames.push(prev); // held frame: reuse the bytes
+    } else {
+      anim.draw(ctx, t);
+      prev = await encodePNG(cv);
+      if (prev.length < 8) throw new Error('Frame encode failed');
+      frames.push(prev);
+    }
+    prevKey = key;
+    if (i % 5 === 0) onProgress?.(i + 1, total);
+  }
+  return { frames, width: cv.width, height: cv.height };
+}
