@@ -196,6 +196,39 @@ function toast(text) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
 }
 
+/* ───────────── not on a Mac ─────────────
+   Emoji art and the San Francisco font come from the computer, so on Windows/Linux the mockups
+   can't be exact. Say so once, and give the text Inter, a close stand-in. Inter is listed after
+   San Francisco, so a Mac would never use it even if misdetected. Add ?win to preview this on a Mac. */
+const forceNonApple = new URLSearchParams(location.search).has('win');
+const platformName = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || '';
+const isApple = !forceNonApple && /mac|iphone|ipad|ipod/i.test(platformName);
+const NOTE_KEY = 'phony.nonAppleNote';
+if (!isApple) {
+  document.documentElement.classList.add('non-apple');
+  const inter = (file, range) => `@font-face { font-family: 'Inter Phony'; font-style: normal; font-weight: 100 900; font-display: swap;
+    src: url(https://cdn.jsdelivr.net/npm/@fontsource-variable/inter@5.3.0/files/${file}) format('woff2'); unicode-range: ${range}; }`;
+  // inline (not a <link>) so exports can embed it
+  const css = document.createElement('style');
+  css.textContent = [
+    inter('inter-latin-wght-normal.woff2', 'U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD'),
+    inter('inter-latin-ext-wght-normal.woff2', 'U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF'),
+  ].join('\n');
+  document.head.appendChild(css);
+  let dismissed = false;
+  try { dismissed = localStorage.getItem(NOTE_KEY) === '1'; } catch {}
+  if (!dismissed) {
+    const note = document.createElement('div');
+    note.className = 'os-note';
+    note.innerHTML = '<span><b>Not on a Mac?</b> Emoji will look like this computer’s emoji, not Apple’s, and text uses a close stand-in for Apple’s font. For exact iOS mockups, export from a Mac.</span><button class="icon-btn" title="Dismiss">✕</button>';
+    note.querySelector('button').addEventListener('click', () => {
+      note.remove();
+      try { localStorage.setItem(NOTE_KEY, '1'); } catch {}
+    });
+    $('.topbar').after(note);
+  }
+}
+
 const filePicker = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*' });
 function pickImage(maxDim, cb) {
   filePicker.value = '';

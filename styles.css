@@ -171,6 +171,13 @@ body.animated .anim-only { display: flex !important; }
 
 #offscreen { position: fixed; left: -100000px; top: 0; pointer-events: none; }
 
+.os-note {
+  display: flex; align-items: center; gap: 12px; padding: 7px 10px 7px 16px;
+  background: #2a2416; border-bottom: 1px solid #4a3f1f; color: #e9d29a; font-size: 12.5px;
+}
+.os-note span { flex: 1; }
+.os-note b { color: #ffe2a3; font-weight: 600; }
+.os-note .icon-btn { color: #e9d29a; }
 .toast {
   position: fixed; bottom: 70px; left: 50%; transform: translateX(-50%) translateY(20px);
   background: #23293a; border: 1px solid var(--line); padding: 9px 14px; border-radius: 10px;
@@ -209,6 +216,8 @@ body.animated .anim-only { display: flex !important; }
   text-rendering: optimizeLegibility;
   position: relative;
 }
+/* not on a Mac: Inter stands in for San Francisco (listed after it, so Macs never pick it) */
+.non-apple .mock { --ios-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Inter Phony", "Helvetica Neue", Helvetica, Arial, sans-serif; }
 .mock.dark {
   --bg-ios: #000;
   --label: #fff;
