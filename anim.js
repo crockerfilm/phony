@@ -378,11 +378,12 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
       return { units, lines };
     };
     // deterministic jitter so the rhythm feels human but every render matches
+    const FADE = 0.12; // seconds a streamed word takes to fade in
     const jitter = (i) => { const x = Math.sin(i * 12.9898 + 78.233) * 43758.5453; return x - Math.floor(x); };
     const schedule = (units, byWord) => {
       const w = units.map((u, i) => {
         if (byWord) return u.space ? 0.12 : 0.7 + 0.6 * jitter(i) + (u.end ? 1.6 : 0);
-        return 0.55 + 0.9 * jitter(i) + (units[i - 1]?.space ? 0.7 : 0); // small beat after each space
+        return 0.55 + 0.9 * jitter(i) + (u.space ? 0.7 : 0); // a small beat before each new word
       });
       const total = w.reduce((a, v) => a + v, 0) || 1;
       let acc = 0;
@@ -390,7 +391,11 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
     };
 
     all.forEach((e) => { e.style.visibility = 'hidden'; });
+    // with 'under' layers the root's own fill would cover them — bgFill paints that colour instead
+    const under = defs.some((l) => l.under);
+    if (under) root.style.setProperty('background', 'none', 'important');
     const base = await capture(root, scale);
+    if (under) root.style.removeProperty('background');
     const layers = [];
     for (let i = 0; i < defs.length; i++) {
       if (isStale?.()) throw stale();
@@ -408,14 +413,23 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
       }
       layers.push({ ...l, img, u, ax, ay, text, dur: l.dur || 0.001 });
     }
-    // a typing layer can swap a one-line background for the full one when the text wraps
+    // a typing layer can step through backgrounds as its text wraps: grow = [one line, two lines, …, full]
     for (const l of layers) {
       if (!l.grow || !l.text) continue;
-      const [shortL, fullL] = l.grow.map((id) => layers.find((x) => x.id === id));
-      if (!shortL || !fullL) continue;
-      const i = l.text.units.findIndex((u) => u.boxes.some((bx) => bx.line > 0));
-      if (i < 0) { shortL.end = undefined; fullL.start = Infinity; continue; }
-      shortL.end = fullL.start = l.start + l.text.at[i] * l.dur;
+      const bgs = l.grow.map((id) => layers.find((x) => x.id === id)).filter(Boolean);
+      if (!bgs.length) continue;
+      bgs.forEach((b) => { b.start = Infinity; b.end = undefined; });
+      const lineCount = l.text.lines.length || 1;
+      const startOf = (k) => {
+        if (k === 0) return 0;
+        const i = l.text.units.findIndex((u) => u.boxes.some((bx) => bx.line >= k));
+        return i < 0 ? Infinity : l.start + l.text.at[i] * l.dur;
+      };
+      for (let k = 0; k < lineCount; k++) {
+        const b = k === lineCount - 1 ? bgs[bgs.length - 1] : bgs[Math.min(k, bgs.length - 2)];
+        b.start = Math.min(b.start, startOf(k));
+        if (k < lineCount - 1) b.end = startOf(k + 1);
+      }
     }
 
     const introDur = d.intro === 'drop' ? 0.6 : d.intro === 'fade' ? 0.35 : 0;
@@ -424,7 +438,7 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
       if (t < l.start || (l.end != null && t >= l.end)) return false;
       if (l.fx === 'blink' || l.fx === 'pulse') return true;
       if (l.fx === 'keys' && l.caretAfter && l.caret) return true; // caret keeps blinking
-      return t < l.start + l.dur;
+      return t < l.start + l.dur + (l.fx === 'stream' ? FADE : 0); // the last word is still fading in
     };
 
     return {
@@ -479,7 +493,6 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
             ctx.translate(0, Math.round(lerp(14, 0, easeOut(p)) * scale));
           } else if ((l.fx === 'keys' || l.fx === 'stream') && l.text.units.length) {
             const { units, lines, at } = l.text;
-            const FADE = 0.12; // seconds a streamed word takes to fade in
             const tt = t - l.start;
             const shownAt = (i) => at[i] * l.dur; // seconds after start when unit i appears
             // whole units revealed so far: per line, everything left of the furthest revealed box
@@ -501,16 +514,18 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
               ctx.restore();
             }
             if (l.fx === 'stream') {
-              // the next few words fade in on top
+              // the next few words fade in on top; only the first one on a fresh line brings its bullet
+              const lit = new Set(reach.keys());
               for (let i = last + 1; i < units.length && shownAt(i) <= tt; i++) {
                 const a = clamp01((tt - shownAt(i)) / FADE);
                 ctx.save();
                 ctx.globalAlpha *= a;
                 ctx.beginPath();
-                for (const bx of units[i].boxes) band(bx.line, reach.has(bx.line) ? bx.x : 0, bx.right);
+                for (const bx of units[i].boxes) band(bx.line, lit.has(bx.line) ? bx.x : 0, bx.right);
                 ctx.clip();
                 put();
                 ctx.restore();
+                units[i].boxes.forEach((bx) => lit.add(bx.line));
               }
             }
             if (l.fx === 'keys' && l.caret) {
@@ -525,7 +540,7 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
               if (on && ln) {
                 const h = ln.bottom - ln.top;
                 ctx.fillStyle = l.caret;
-                ctx.fillRect(Math.round((cx + 1) * scale), Math.round((ln.top + h * 0.1) * scale), Math.max(1, Math.round(2 * scale)), Math.round(h * 0.8 * scale));
+                ctx.fillRect(Math.round((cx + 1) * scale), Math.round(ln.top * scale), Math.max(1, Math.round(2 * scale)), Math.round(h * scale));
               }
             }
             ctx.restore();

@@ -762,7 +762,7 @@ panel.addEventListener('input', (e) => {
       const th = panel.querySelector('.avatar-pick .thumb');
       if (th) th.outerHTML = avatar(who.avatar, who.name, 40, 'thumb');
     }
-    commit(t.tagName === 'SELECT'); // selects can change which controls are visible
+    commit(t.tagName === 'SELECT' || t.type === 'checkbox'); // these can change which controls are visible
     return;
   }
   if (t.dataset.f) {
@@ -989,9 +989,13 @@ function chatSteps() {
 }
 
 const noNotifs = () => state.mode === 'notif' && !state.notif.items.length;
+const emptyList = () => (state.mode === 'mail' && !state.mail.items.length)
+  || (state.mode === 'comment' && !state.comment.items.length)
+  || (state.mode === 'gpt' && !state.gpt.items.length);
 
 async function exportPNG() {
   if (noNotifs()) return toast('Add a notification first');
+  if (emptyList()) return toast('Add something first');
   const name = { chat: 'chat', notif: 'notification' }[state.mode] || state.mode;
   download(await snap(renderMode()), `phony-${name}-${stampName()}.png`);
 }
@@ -1105,6 +1109,7 @@ function scheduleAnimBuild() {
 }
 
 async function buildPreviewAnim() {
+  if (!animOn()) return; // e.g. switched to a stills-only tab while a rebuild was queued
   const token = ++animToken;
   try {
     const a = await buildAnim(PREVIEW_SCALE, {

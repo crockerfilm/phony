@@ -113,10 +113,13 @@ export function createExtras(h) {
       const typed = q ? `<span class="s-q" data-l="q">${rich(q)}</span>` : '';
       const field = `<div class="s-field">${ph}${caret0}${typed}</div>`;
       // the bar's background is its own element: one line tall until typing wraps, then full height
-      const bg = anim ? '<span class="s-bg one" data-l="bg1"></span><span class="s-bg" data-l="bgN"></span>' : '<span class="s-bg"></span>';
+      const one = g ? 52 : 44;
+      const bg = anim
+        ? [1, 2, 3, 4, 5].map((k) => `<span class="s-bg one" data-l="bg${k}" style="height:${one + 24 * (k - 1)}px"></span>`).join('') + '<span class="s-bg" data-l="bgN"></span>'
+        : '<span class="s-bg"></span>';
       const bar = g
         ? `<div class="s-bar g-bar">${bg}<span class="s-lead">${s.logo ? G_LOGO : MAG}</span>${field}<span class="s-ic">${ICONS.MIC_SVG}</span><span class="s-ic">${LENS}</span></div>`
-        : `<div class="s-top"><div class="s-bar sf-bar">${bg}<span class="s-ic">${MAG}</span>${field}${q ? `<span class="s-clear">${CLEAR}</span>` : ''}</div><span class="sf-cancel">Cancel</span></div>`;
+        : `<div class="s-top"><div class="s-bar sf-bar">${bg}<span class="s-ic">${MAG}</span>${field}${q ? `<span class="s-clear"${anim ? ' data-l="clr"' : ''}>${CLEAR}</span>` : ''}</div><span class="sf-cancel">Cancel</span></div>`;
       const sugs = s.suggest ? lines(s.suggestions).slice(0, 8) : [];
       const sugHTML = sugs.length ? `<div class="s-sugs" data-l="sugs">${sugs.map((x) => {
         const low = x.toLowerCase(), pre = q.toLowerCase();
@@ -131,12 +134,14 @@ export function createExtras(h) {
       let t = s.intro === 'none' ? 0.2 : 0.55;
       const typeAt = t + 0.7 / speed; // a beat with the blinking cursor first
       const typeDur = Math.max(0.3, n * 0.1 / (s.typeSpeed * speed)); // ~10 characters a second
+      const bgIds = ['bg1', 'bg2', 'bg3', 'bg4', 'bg5', 'bgN'];
       const layers = [
-        { id: 'bg1', sel: '[data-l="bg1"]', fx: 'show', start: 0, under: true },
-        { id: 'bgN', sel: '[data-l="bgN"]', fx: 'show', start: Infinity, under: true },
-        { sel: '[data-l="ph"]', fx: 'show', start: 0, end: typeAt },
-        { sel: '[data-l="c0"]', fx: 'blink', start: t, end: typeAt },
-        { sel: '[data-l="q"]', fx: 'keys', start: typeAt, dur: typeDur, caret: s.style === 'google' ? '#1a73e8' : '#007aff', caretAfter: true, grow: ['bg1', 'bgN'] },
+        ...bgIds.map((id) => ({ id, sel: `[data-l="${id}"]`, fx: 'show', start: id === 'bg1' ? 0 : Infinity, under: true })),
+        // with nothing to type, the placeholder and cursor just stay
+        { sel: '[data-l="ph"]', fx: 'show', start: 0, end: n ? typeAt : undefined },
+        { sel: '[data-l="c0"]', fx: 'blink', start: t, end: n ? typeAt : undefined },
+        { sel: '[data-l="clr"]', fx: 'show', start: typeAt },
+        { sel: '[data-l="q"]', fx: 'keys', start: typeAt, dur: typeDur, caret: s.style === 'google' ? '#1a73e8' : '#007aff', caretAfter: true, grow: bgIds },
       ];
       t = typeAt + typeDur + 0.15 / speed;
       if (s.suggest) {
@@ -151,24 +156,28 @@ export function createExtras(h) {
   /* ───────────── ChatGPT ───────────── */
   const md = (src) => {
     // tiny markdown: paragraphs, "- " bullets, "1." numbers, ### headings, **bold**
-    const inline = (s) => s.split(/\*\*/).map((part, i) => (i % 2 ? `<b>${rich(part)}</b>` : rich(part))).join('');
+    const inline = (s) => {
+      const p = s.split(/\*\*/);
+      if (p.length % 2 === 0) { const tail = p.pop(); p[p.length - 1] += `**${tail}`; } // unmatched ** stays as typed
+      return p.map((part, i) => (i % 2 ? `<b>${rich(part)}</b>` : rich(part))).join('');
+    };
     const out = [];
     let list = null;
     for (const raw of String(src || '').split('\n')) {
       const ln = raw.trim();
-      const ul = ln.match(/^[-•*]\s+(.*)$/), ol = ln.match(/^\d+[.)]\s+(.*)$/);
+      const ul = ln.match(/^[-•*]\s+(.*)$/), ol = ln.match(/^(\d+)[.)]\s+(.*)$/);
       if (ul || ol) {
         const tag = ul ? 'ul' : 'ol';
-        if (!list || list.tag !== tag) { list = { tag, items: [] }; out.push(list); }
-        list.items.push(inline((ul || ol)[1]));
+        if (!list || list.tag !== tag) { list = { tag, start: ol ? Number(ol[1]) : 1, items: [] }; out.push(list); }
+        list.items.push(inline(ul ? ul[1] : ol[2]));
         continue;
       }
+      if (!ln) continue; // blank lines between items keep the list going (ChatGPT pastes look like this)
       list = null;
-      if (!ln) continue;
       const hd = ln.match(/^#{1,4}\s+(.*)$/);
       out.push(hd ? `<h4>${inline(hd[1])}</h4>` : `<p>${inline(ln)}</p>`);
     }
-    return out.map((b) => (typeof b === 'string' ? b : `<${b.tag}>${b.items.map((x) => `<li>${x}</li>`).join('')}</${b.tag}>`)).join('');
+    return out.map((b) => (typeof b === 'string' ? b : `<${b.tag}${b.start > 1 ? ` start="${b.start}"` : ''}>${b.items.map((x) => `<li>${x}</li>`).join('')}</${b.tag}>`)).join('');
   };
   const gpt = {
     label: 'ChatGPT',
@@ -212,6 +221,11 @@ export function createExtras(h) {
           t += (0.35 + 0.5) / speed;
         } else {
           const think = 1.1 / speed;
+          if (!it.text.trim()) { // an empty answer stays "thinking", like the still
+            layers.push({ sel: `[data-l="d${i}"]`, fx: 'pulse', start: t, anchor: 'center' });
+            t += 1.1 / speed;
+            return;
+          }
           const words = it.text.trim().split(/\s+/).filter(Boolean).length;
           const dur = Math.min(14, Math.max(0.5, words * 0.075)) / speed; // ~13 words a second
           layers.push({ sel: `[data-l="d${i}"]`, fx: 'pulse', start: t, end: t + think, anchor: 'center' });
