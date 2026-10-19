@@ -1016,7 +1016,8 @@ $('#modeTabs').addEventListener('click', (e) => {
   renderAll();
 });
 // only the open tab goes back to its example — other tabs, custom emoji and settings stay
-$('#resetTab').addEventListener('click', () => {
+// ?. — a browser still holding the old cached page (no button) mustn't stop the app from starting
+$('#resetTab')?.addEventListener('click', () => {
   const name = $(`#modeTabs [data-mode="${state.mode}"]`)?.textContent || 'This tab';
   if (!confirm(`Reset ${name} to its example content?\n\nWhat you’ve made in ${name} will be replaced. Other tabs, custom emoji and settings stay as they are.`)) return;
   state[state.mode] = defaults()[state.mode];
