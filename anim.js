@@ -312,6 +312,165 @@ export async function buildNotifAnim(d, scale, { onProgress, isStale } = {}) {
   }
 }
 
+/* ───────────── Scenes (search, ChatGPT, comments, calls, mail) ─────────────
+   The final state is laid out once; elements tagged by a layer selector are captured separately
+   and brought in on a timeline. Times are seconds, speed already applied by the caller.
+   d = { html, bgFill, intro: 'none'|'fade'|'drop', outro: null|{ start, dur }, duration,
+         layers: [{ sel, fx: 'show'|'fade'|'pop'|'drop'|'rise'|'type'|'blink'|'pulse', start, dur, end, anchor, caret, caretAfter }] } */
+export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
+  const stage = newStage();
+  try {
+    const root = await mountIn(stage, d.html);
+    const W = root.offsetWidth, H = root.offsetHeight;
+    const defs = d.layers.map((l) => ({ ...l, els: [...root.querySelectorAll(l.sel)] })).filter((l) => l.els.length);
+    const all = defs.flatMap((l) => l.els);
+    // a layer capture holds only that layer: everything else (incl. backgrounds) is hidden
+    const only = async (set) => {
+      root.style.visibility = 'hidden';
+      all.forEach((e) => { e.style.visibility = set.includes(e) ? 'visible' : 'hidden'; });
+      const cv = await capture(root, scale);
+      root.style.visibility = '';
+      return cv;
+    };
+    const union = (els) => {
+      const rs = els.map((e) => rel(e, root));
+      const x0 = Math.min(...rs.map((r) => r.x)), y0 = Math.min(...rs.map((r) => r.y));
+      return { x: x0, y: y0, w: Math.max(...rs.map((r) => r.x + r.w)) - x0, h: Math.max(...rs.map((r) => r.y + r.h)) - y0 };
+    };
+    // visual line boxes of an element's text (and inline images), in reading order
+    const lineBoxes = (el) => {
+      const b = root.getBoundingClientRect();
+      const rects = [];
+      const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+      for (let n = walk.currentNode; n; n = walk.nextNode()) {
+        if (n.nodeType === 3 && n.textContent.trim()) {
+          const r = document.createRange();
+          r.selectNodeContents(n);
+          rects.push(...r.getClientRects());
+        } else if (n.tagName === 'IMG') rects.push(n.getBoundingClientRect());
+      }
+      const lines = [];
+      for (const x of rects) {
+        if (!x.width || !x.height) continue;
+        const top = x.top - b.top, bottom = x.bottom - b.top, mid = (top + bottom) / 2;
+        const ln = lines.find((l) => Math.abs(l.mid - mid) < Math.max(4, (bottom - top) / 3));
+        if (ln) Object.assign(ln, { top: Math.min(ln.top, top), bottom: Math.max(ln.bottom, bottom), left: Math.min(ln.left, x.left - b.left), right: Math.max(ln.right, x.right - b.left) });
+        else lines.push({ top, bottom, mid, left: x.left - b.left, right: x.right - b.left });
+      }
+      lines.sort((p, q) => p.top - q.top || p.left - q.left);
+      return lines;
+    };
+
+    all.forEach((e) => { e.style.visibility = 'hidden'; });
+    const base = await capture(root, scale);
+    const layers = [];
+    for (let i = 0; i < defs.length; i++) {
+      if (isStale?.()) throw stale();
+      onProgress?.(i, defs.length);
+      const l = defs[i];
+      const u = union(l.els);
+      const cv = await only(l.els);
+      const img = crop(cv, scale, u.y - 30, u.h + 60);
+      const ax = { tl: u.x, bl: u.x, tr: u.x + u.w, br: u.x + u.w }[l.anchor] ?? u.x + u.w / 2;
+      const ay = { tl: u.y, tr: u.y, bl: u.y + u.h, br: u.y + u.h }[l.anchor] ?? u.y + u.h / 2;
+      const lines = l.fx === 'type' ? l.els.flatMap(lineBoxes) : null;
+      const total = lines ? lines.reduce((s, ln) => s + (ln.right - ln.left), 0) : 0;
+      layers.push({ ...l, img, u, ax, ay, lines, total, dur: l.dur || 0.001 });
+    }
+
+    const introDur = d.intro === 'drop' ? 0.6 : d.intro === 'fade' ? 0.35 : 0;
+    const duration = Math.max(0.5, d.duration);
+    const moving = (l, t) => {
+      if (t < l.start || (l.end != null && t >= l.end)) return false;
+      if (l.fx === 'blink' || l.fx === 'pulse') return true;
+      if (l.fx === 'type' && l.caretAfter && l.caret) return true; // caret keeps blinking
+      return t < l.start + l.dur;
+    };
+
+    return {
+      width: W, height: H, scale, duration,
+      key(t) {
+        if (t < introDur) return null;
+        if (d.outro && t >= d.outro.start && t < d.outro.start + d.outro.dur) return null;
+        if (layers.some((l) => moving(l, t))) return null;
+        const vis = layers.map((l) => (t >= l.start && (l.end == null || t < l.end) ? 1 : 0)).join('');
+        return `s${vis}${d.outro && t >= d.outro.start ? 'o' : ''}`;
+      },
+      draw(ctx, t) {
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        if (d.bgFill) { ctx.fillStyle = d.bgFill; ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height); }
+        ctx.save();
+        // whole-frame intro / outro
+        let alpha = 1, dy = 0;
+        if (d.intro === 'fade') alpha = clamp01(t / introDur);
+        if (d.intro === 'drop') { const p = clamp01(t / introDur); dy = lerp(-H - 20, 0, spring(p)); alpha = Math.min(1, p * 3); }
+        if (d.outro && t >= d.outro.start) {
+          const q = easeIn((t - d.outro.start) / d.outro.dur);
+          dy += -q * (H + 20);
+          alpha *= 1 - q * 0.6;
+          if (q >= 1) { ctx.restore(); return; }
+        }
+        ctx.globalAlpha = alpha;
+        ctx.translate(0, Math.round(dy * scale));
+        ctx.drawImage(base, 0, 0);
+        for (const l of layers) {
+          if (t < l.start || (l.end != null && t >= l.end)) continue;
+          const p = clamp01((t - l.start) / l.dur);
+          const put = () => ctx.drawImage(l.img.img, 0, l.img.y);
+          ctx.save();
+          if (l.fx === 'fade') ctx.globalAlpha *= p;
+          else if (l.fx === 'blink') { if (Math.floor((t - l.start) * 2) % 2) { ctx.restore(); continue; } }
+          else if (l.fx === 'pulse') {
+            const v = 0.5 + 0.5 * Math.sin((t - l.start) * 2 * Math.PI / 1.1);
+            const s = 0.82 + 0.22 * v;
+            ctx.globalAlpha *= 0.55 + 0.45 * v;
+            ctx.translate(l.ax * scale, l.ay * scale); ctx.scale(s, s); ctx.translate(-l.ax * scale, -l.ay * scale);
+          } else if (l.fx === 'pop') {
+            const s = 0.4 + 0.6 * spring(p);
+            ctx.globalAlpha *= Math.min(1, p * 2.5);
+            ctx.translate(l.ax * scale, l.ay * scale); ctx.scale(s, s); ctx.translate(-l.ax * scale, -l.ay * scale);
+          } else if (l.fx === 'drop') {
+            ctx.globalAlpha *= Math.min(1, p * 3);
+            ctx.translate(0, Math.round(lerp(-(l.u.y + l.u.h) - 12, 0, spring(p)) * scale));
+          } else if (l.fx === 'rise') {
+            ctx.globalAlpha *= easeOut(p);
+            ctx.translate(0, Math.round(lerp(14, 0, easeOut(p)) * scale));
+          } else if (l.fx === 'type' && l.lines.length) {
+            // reveal line by line, left to right; bullets/markers left of a line show with it
+            let dist = p * l.total, cx = null, cy = null, ch = 0;
+            ctx.beginPath();
+            for (const ln of l.lines) {
+              const w = ln.right - ln.left;
+              const shown = Math.min(w, dist);
+              if (shown <= 0) break;
+              ctx.rect(0, Math.floor((ln.top - 2) * scale), Math.ceil((ln.left + shown) * scale), Math.ceil((ln.bottom - ln.top + 4) * scale));
+              cx = ln.left + shown; cy = ln.top; ch = ln.bottom - ln.top;
+              dist -= w;
+            }
+            if (cx == null) { const ln = l.lines[0]; cx = ln.left; cy = ln.top; ch = ln.bottom - ln.top; }
+            ctx.save();
+            ctx.clip();
+            put();
+            ctx.restore();
+            const blinkOn = p < 1 || (l.caretAfter && Math.floor((t - l.start - l.dur) * 2) % 2 === 0);
+            if (l.caret && blinkOn) {
+              ctx.fillStyle = l.caret;
+              ctx.fillRect(Math.round((cx + 1) * scale), Math.round((cy + ch * 0.1) * scale), Math.max(1, Math.round(2 * scale)), Math.round(ch * 0.8 * scale));
+            }
+            ctx.restore();
+            continue;
+          }
+          put();
+          ctx.restore();
+        }
+        ctx.restore();
+      },
+    };
+  } finally {
+    stage.remove();
+  }
+}
+
 /* ───────────── rendering frames ───────────── */
 
 export async function renderFrames(anim, fps, onProgress) {

@@ -25,6 +25,13 @@ Then open http://localhost:5178 (needs a server, not `file://`, because `app.js`
 - Contact-photo (message) style, subtitle, attachment thumbnail
 - Stacked or list layout, adjustable material opacity
 
+**Search · ChatGPT · Comments · Calls · Mail**
+- Google / Safari search bar with suggestions (types out when animated)
+- ChatGPT app or chat-only, with streaming answers (bold, bullets, lists)
+- Instagram / TikTok comments and the TikTok "reply to comment" sticker
+- Incoming call banner, full-screen call and FaceTime
+- Mail inbox rows
+
 ## Exports (2×/3×/4×; transparent, theme color, or green screen)
 - **Download PNG** — what you see
 - **Build sequence .zip** — one same-size frame per message (optionally with typing frames) to drop on a timeline

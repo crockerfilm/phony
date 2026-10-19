@@ -1,5 +1,6 @@
 import { domToCanvas } from 'https://cdn.jsdelivr.net/npm/modern-screenshot@4.7.0/dist/index.mjs';
-import { buildChatAnim, buildNotifAnim, renderFrames, noDecode, encodePNG } from './anim.js';
+import { buildChatAnim, buildNotifAnim, buildSceneAnim, renderFrames, noDecode, encodePNG } from './anim.js';
+import { createExtras, EXTRA_DEFAULTS } from './extras.js';
 import { pngMov } from './mov.js';
 
 /* ───────────── state ───────────── */
@@ -20,6 +21,7 @@ const defaults = () => ({
   scale: 3,
   bg: 'transparent',
   anim: { on: false, fps: 30, speed: 1, endHold: 1.5, slideOut: false },
+  ...EXTRA_DEFAULTS(),
   chat: {
     layout: 'phone',
     service: 'imessage',
@@ -62,7 +64,9 @@ function load() {
     if (raw) {
       const d = defaults();
       const s = JSON.parse(raw);
-      return { ...d, ...s, anim: { ...d.anim, ...s.anim }, chat: { ...d.chat, ...s.chat }, notif: { ...d.notif, ...s.notif } };
+      const merged = { ...d, ...s };
+      for (const k of ['anim', 'chat', 'notif', ...Object.keys(EXTRA_DEFAULTS())]) merged[k] = { ...d[k], ...s[k] };
+      return merged;
     }
   } catch {}
   return defaults();
@@ -72,7 +76,7 @@ let saveTimer = 0;
 let imagesUnsaved = false; // this tab holds photos its last save had to drop
 let adoptPending = false; // another tab saved while this one was exporting
 // photos/avatars/icons are dropped from the save when everything won't fit the ~5 MB quota
-const IMG_KEYS = new Set(['image', 'avatar', 'icon', 'thumb']);
+const IMG_KEYS = new Set(['image', 'avatar', 'icon', 'thumb', 'bgImage']);
 const noImages = (k, v) => (IMG_KEYS.has(k) ? null : v);
 function flushSave() {
   clearTimeout(saveTimer);
@@ -104,12 +108,15 @@ function adoptSaved() {
   Object.assign(next, { mode, theme, scale, bg });
   Object.assign(next.anim, { on, fps });
   if (imagesUnsaved) { // the other tab never saw photos this one couldn't save — keep them
-    const old = new Map([...state.chat.items, ...state.notif.items].map((x) => [x.id, x]));
-    for (const x of [...next.chat.items, ...next.notif.items]) {
+    const itemsOf = (st) => ['chat', 'notif', 'gpt', 'comment', 'mail'].flatMap((k) => st[k]?.items || []);
+    const old = new Map(itemsOf(state).map((x) => [x.id, x]));
+    for (const x of itemsOf(next)) {
       const o = old.get(x.id);
       if (o) for (const f of IMG_KEYS) if (x[f] == null && o[f]) x[f] = o[f];
     }
     next.chat.avatar ??= state.chat.avatar;
+    next.call.avatar ??= state.call.avatar;
+    next.call.bgImage ??= state.call.bgImage;
   }
   state = next;
   renderAll();
@@ -486,7 +493,7 @@ const canvas = $('#canvas');
 function renderPreview() {
   document.body.classList.toggle('animated', state.anim.on);
   if (state.anim.on) return scheduleAnimBuild();
-  host.innerHTML = state.mode === 'chat' ? renderChat() : renderNotifs();
+  host.innerHTML = renderMode();
   fitPreview();
   // Safari decodes data: URLs async, so photos can still be 0×0 here — re-fit once they arrive
   host.querySelectorAll('img:not(.emo)').forEach((i) => { if (!i.complete) i.addEventListener('load', fitPreview, { once: true }); });
@@ -516,6 +523,7 @@ const text = (key, label, ph = '') => `<label class="field">${label}<input type=
 const check = (key, label) => `<label class="check"><input type="checkbox" data-k="${key}" ${getPath(key) ? 'checked' : ''}>${label}</label>`;
 const FMT = { pt: (v) => `${v}pt`, pct: (v) => `${Math.round(v * 100)}%`, x: (v) => `${v}×`, s: (v) => `${v}s` };
 const range = (key, label, min, max, step, fmt) => `<label class="field">${label} <span data-out="${key}">${FMT[fmt](getPath(key))}</span><input type="range" data-k="${key}" data-fmt="${fmt}" min="${min}" max="${max}" step="${step}" value="${getPath(key)}"></label>`;
+const area = (key, label, rows = 3) => `<label class="field">${label}<textarea class="txt" data-k="${key}" rows="${rows}">${esc(getPath(key))}</textarea></label>`;
 const select = (key, label, options) => `<label class="field">${label}<select data-k="${key}">${options
   .map(([v, l]) => `<option value="${v}" ${getPath(key) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
 
@@ -556,12 +564,19 @@ function msgRowHTML(it, i, total) {
 const openRows = new Set();
 let scriptDraft = '', scriptOpen = false;
 
+const EXTRAS = createExtras({
+  S: () => state, esc, rich, avatar, seg, text, check, range, area, rootClasses,
+  ICONS: { PHONE_PATH, MIC_SVG, SIGNAL_SVG, BATTERY_SVG, wifiSVG },
+});
+const extra = () => EXTRAS[state.mode];
+const renderMode = () => (state.mode === 'chat' ? renderChat() : state.mode === 'notif' ? renderNotifs() : extra().render());
+
 function animSection() {
   if (!state.anim.on) return '';
   return `<div class="sec">
     <h3>Animation</h3>
     <div class="row">${range('anim.speed', 'Speed', 0.5, 2, 0.1, 'x')}${range('anim.endHold', 'Hold at end', 0, 5, 0.1, 's')}</div>
-    ${state.mode === 'chat'
+    ${extra() ? extra().animControls() : state.mode === 'chat'
       ? `<div class="row">${check('chat.seqTyping', 'Typing bubble before received messages')}</div>
          ${state.chat.layout === 'phone' ? '' : `<div class="row">${seg('chat.anchor', [['bottom', 'Grow upward (anchor bottom)'], ['top', 'Grow downward (anchor top)']])}</div>`}
          <p class="hint">Bubbles pop in one at a time and the thread scrolls like the real app. Turn on “Typing indicator at end” to finish on someone typing.</p>`
@@ -678,7 +693,7 @@ function notifPanel() {
 let focusAfterRender = null;
 function renderPanel() {
   const top = panel.scrollTop;
-  panel.innerHTML = state.mode === 'chat' ? chatPanel() : notifPanel();
+  panel.innerHTML = state.mode === 'chat' ? chatPanel() : state.mode === 'notif' ? notifPanel() : animSection() + extra().panel();
   const grow = () => panel.querySelectorAll('textarea').forEach(autoGrow);
   grow();
   panel.scrollTop = top; // heights were collapsed while the rows rebuilt
@@ -719,7 +734,7 @@ const commit = (rerenderPanel = false) => {
   renderPreview();
 };
 
-const list = () => (state.mode === 'chat' ? state.chat.items : state.notif.items);
+const list = () => (state.mode === 'chat' ? state.chat.items : state.mode === 'notif' ? state.notif.items : extra().items?.() || []);
 const findItem = (el) => {
   const id = el.closest('[data-id]')?.dataset.id;
   return id && list().find((x) => x.id === id);
@@ -814,15 +829,21 @@ panel.addEventListener('click', (e) => {
     case 'tb': it.tapback = it.tapback === b.dataset.v ? '' : b.dataset.v; break;
     case 'img': return pickImage(1200, (url) => { it.image = url; commit(true); });
     case 'img-clear': it.image = null; break;
-    case 'avatar':
-      return pickImage(400, (url) => { (it || c).avatar = url; commit(true); });
-    case 'avatar-clear': (it || c).avatar = null; break;
+    case 'avatar': {
+      const target = it || (state.mode === 'call' ? state.call : c);
+      return pickImage(400, (url) => { target.avatar = url; commit(true); });
+    }
+    case 'avatar-clear': (it || (state.mode === 'call' ? state.call : c)).avatar = null; break;
+    case 'bg-img': return pickImage(1600, (url) => { state.call.bgImage = url; commit(true); });
+    case 'role': it.role = b.dataset.v; break;
     case 'icon': return pickImage(256, (url) => { it.icon = url; commit(true); });
     case 'icon-clear': it.icon = null; break;
     case 'thumb': return pickImage(600, (url) => { it.thumb = url; commit(true); });
     case 'thumb-clear': it.thumb = null; break;
     case 'add':
-      if (state.mode === 'chat') {
+      if (extra()) {
+        items.push(extra().add(b.dataset.v));
+      } else if (state.mode === 'chat') {
         const n = msg(b.dataset.v, '');
         items.push(n);
         focusAfterRender = n.id;
@@ -964,8 +985,8 @@ const noNotifs = () => state.mode === 'notif' && !state.notif.items.length;
 
 async function exportPNG() {
   if (noNotifs()) return toast('Add a notification first');
-  const html = state.mode === 'chat' ? renderChat() : renderNotifs();
-  download(await snap(html), `phony-${state.mode === 'chat' ? 'chat' : 'notification'}-${stampName()}.png`);
+  const name = { chat: 'chat', notif: 'notification' }[state.mode] || state.mode;
+  download(await snap(renderMode()), `phony-${name}-${stampName()}.png`);
 }
 
 async function exportSequence(progress) {
@@ -1032,6 +1053,12 @@ function bgFill() {
 
 function buildAnim(scale, opts) {
   const a = state.anim;
+  if (extra()) {
+    const sc = extra().scene(a.speed);
+    const outro = sc.outro ? { start: sc.end + a.endHold, dur: sc.outro.dur } : null;
+    const duration = outro ? outro.start + outro.dur + 0.3 : sc.end + a.endHold;
+    return buildSceneAnim({ ...sc, outro, duration, bgFill: bgFill() }, scale, opts);
+  }
   if (state.mode === 'chat') {
     const c = state.chat;
     const w = c.layout === 'phone' ? 393 : c.width;
@@ -1164,7 +1191,9 @@ let exporting = null; // { k, text } while an export runs
 function renderExportButtons() {
   const btns = state.anim.on
     ? [['mov', 'Export .mov (alpha)', true], ['frames', 'PNG frames .zip']]
-    : state.mode === 'chat'
+    : extra()
+      ? [['png', 'Download PNG', true]]
+      : state.mode === 'chat'
       ? [['png', 'Download PNG', true], ['seq', 'Build sequence .zip'], ['bubbles', 'Each bubble .zip']]
       : [['png', 'Download PNG', true], ['each', 'Each notification .zip']];
   $('#exportBtns').innerHTML = btns
