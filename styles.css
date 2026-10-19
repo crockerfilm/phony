@@ -171,6 +171,9 @@ body.animated .anim-only { display: flex !important; }
 
 #offscreen { position: fixed; left: -100000px; top: 0; pointer-events: none; }
 
+.panel-foot { position: relative; }
+.reset-tab { position: absolute; top: 7px; right: 12px; color: var(--muted); border-color: transparent; font-size: 12px; }
+.reset-tab:hover { color: var(--text); border-color: var(--line); }
 details.emoji-sec summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 details.emoji-sec[open] summary { margin-bottom: 6px; }
 .txt.emoji-in { flex: none; width: 64px; text-align: center; font-size: 18px; padding: 4px 6px; }
