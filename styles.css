@@ -171,6 +171,13 @@ body.animated .anim-only { display: flex !important; }
 
 #offscreen { position: fixed; left: -100000px; top: 0; pointer-events: none; }
 
+details.emoji-sec summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+details.emoji-sec[open] summary { margin-bottom: 6px; }
+.txt.emoji-in { flex: none; width: 64px; text-align: center; font-size: 18px; padding: 4px 6px; }
+.emoji-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.emoji-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 3px 2px 3px 6px; font-size: 15px; }
+.emoji-chip img { width: 24px; height: 24px; object-fit: contain; }
+.emoji-chip .icon-btn { width: 22px; height: 22px; font-size: 11px; }
 .os-note {
   display: flex; align-items: center; gap: 12px; padding: 7px 10px 7px 16px;
   background: #2a2416; border-bottom: 1px solid #4a3f1f; color: #e9d29a; font-size: 12.5px;

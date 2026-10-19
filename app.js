@@ -22,6 +22,7 @@ const defaults = () => ({
   bg: 'transparent',
   anim: { on: false, fps: 30, speed: 1, endHold: 1.5, slideOut: false },
   ...EXTRA_DEFAULTS(),
+  emoji: {}, // emoji → uploaded picture (data URL), used wherever that emoji appears
   chat: {
     layout: 'phone',
     service: 'imessage',
@@ -65,7 +66,7 @@ function load() {
       const d = defaults();
       const s = JSON.parse(raw);
       const merged = { ...d, ...s };
-      for (const k of ['anim', 'chat', 'notif', ...Object.keys(EXTRA_DEFAULTS())]) merged[k] = { ...d[k], ...s[k] };
+      for (const k of ['anim', 'chat', 'notif', 'emoji', ...Object.keys(EXTRA_DEFAULTS())]) merged[k] = { ...d[k], ...s[k] };
       return merged;
     }
   } catch {}
@@ -77,7 +78,7 @@ let imagesUnsaved = false; // this tab holds photos its last save had to drop
 let adoptPending = false; // another tab saved while this one was exporting
 // photos/avatars/icons are dropped from the save when everything won't fit the ~5 MB quota
 const IMG_KEYS = new Set(['image', 'avatar', 'icon', 'thumb', 'bgImage']);
-const noImages = (k, v) => (IMG_KEYS.has(k) ? null : v);
+const noImages = (k, v) => (IMG_KEYS.has(k) ? null : k === 'emoji' ? {} : v);
 function flushSave() {
   clearTimeout(saveTimer);
   saveTimer = 0;
@@ -117,6 +118,7 @@ function adoptSaved() {
     next.chat.avatar ??= state.chat.avatar;
     next.call.avatar ??= state.call.avatar;
     next.call.bgImage ??= state.call.bgImage;
+    next.emoji = { ...state.emoji, ...next.emoji };
   }
   state = next;
   renderAll();
@@ -151,9 +153,17 @@ function initials(name = '') {
 const EMOJI_TEST = /\p{Emoji_Presentation}|\uFE0F|\u20E3|\p{Regional_Indicator}|\p{Emoji_Modifier}|[\u261D\u26F9\u270C\u270D]|(?=\p{Emoji}|\p{Cn})(?=\p{Extended_Pictographic})[\u{1F000}-\u{1FAFF}]/u;
 const isEmoji = (s) => !s.includes('\uFE0E') && EMOJI_TEST.test(s); // FE0E asks for text style
 const segmenter = new Intl.Segmenter();
+// Custom emoji: an uploaded picture (e.g. Apple's art, when on Windows) replaces an emoji everywhere.
+// Keys ignore the emoji-style selector (FE0F), so ❤ and ❤️ share one picture.
+const emojiKey = (s) => s.replace(/\uFE0F/g, '');
+function customEmoji(s) {
+  const map = state.emoji, k = emojiKey(s);
+  const url = map && Object.hasOwn(map, k) ? map[k] : null;
+  return typeof url === 'string' && url.startsWith('data:image/') ? url : null;
+}
 function isJumbo(text = '') {
   const segs = [...segmenter.segment(text.replace(/\s/g, ''))].map((s) => s.segment);
-  return segs.length > 0 && segs.length <= 3 && segs.every(isEmoji);
+  return segs.length > 0 && segs.length <= 3 && segs.every((s) => isEmoji(s) || customEmoji(s));
 }
 
 // Chrome mis-measures color emoji when rasterising DOM through SVG, so emoji are
@@ -182,7 +192,9 @@ function emojiURL(ch, F = 128) {
 function rich(text = '', F = 128) {
   let out = '';
   for (const { segment } of segmenter.segment(String(text ?? ''))) {
-    out += isEmoji(segment) ? `<img class="emo" src="${emojiURL(segment, F)}" alt="${esc(segment)}">` : esc(segment);
+    const own = customEmoji(segment);
+    if (own) out += `<img class="emo" src="${esc(own)}" alt="${esc(segment)}">`;
+    else out += isEmoji(segment) ? `<img class="emo" src="${emojiURL(segment, F)}" alt="${esc(segment)}">` : esc(segment);
   }
   return out;
 }
@@ -220,7 +232,7 @@ if (!isApple) {
   if (!dismissed) {
     const note = document.createElement('div');
     note.className = 'os-note';
-    note.innerHTML = '<span><b>Not on a Mac?</b> Emoji will look like this computer’s emoji, not Apple’s, and text uses a close stand-in for Apple’s font. For exact iOS mockups, export from a Mac.</span><button class="icon-btn" title="Dismiss">✕</button>';
+    note.innerHTML = '<span><b>Not on a Mac?</b> Emoji and the font won’t be exactly Apple’s. For exact iOS mockups, export from a Mac — or add Apple emoji pictures under “Custom emoji” (bottom of the left panel).</span><button class="icon-btn" title="Dismiss">✕</button>';
     note.querySelector('button').addEventListener('click', () => {
       note.remove();
       try { localStorage.setItem(NOTE_KEY, '1'); } catch {}
@@ -230,7 +242,35 @@ if (!isApple) {
 }
 
 const filePicker = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*' });
-function pickImage(maxDim, cb) {
+// Trim transparent margins and centre on a square (≤256px) so a custom emoji sits like the built-in ones.
+function emojiSquare(src, out = 256) {
+  const w = src.width, h = src.height;
+  let x0 = 0, y0 = 0, x1 = w - 1, y1 = h - 1;
+  try {
+    const a = src.getContext('2d').getImageData(0, 0, w, h).data;
+    let minX = w, minY = h, maxX = -1, maxY = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (a[(y * w + x) * 4 + 3] > 8) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX >= 0) { x0 = minX; y0 = minY; x1 = maxX; y1 = maxY; }
+  } catch {} // e.g. Safari won't read back some SVGs — keep the whole picture
+  const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+  const side = Math.max(bw, bh);
+  const size = Math.min(out, side), k = size / side;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = size;
+  cv.getContext('2d').drawImage(src, x0, y0, bw, bh, (size - bw * k) / 2, (size - bh * k) / 2, bw * k, bh * k);
+  return cv.toDataURL('image/png');
+}
+
+function pickImage(maxDim, cb, { emoji = false } = {}) {
   filePicker.value = '';
   filePicker.onchange = () => {
     const file = filePicker.files[0];
@@ -262,7 +302,7 @@ function pickImage(maxDim, cb) {
         } catch { png = true; }
       }
       if (exporting) return toast('Finish the export first, then add the image');
-      cb(cv.toDataURL(png ? 'image/png' : 'image/jpeg', 0.9));
+      cb(emoji ? emojiSquare(cv) : cv.toDataURL(png ? 'image/png' : 'image/jpeg', 0.9));
     };
     img.src = URL.createObjectURL(file);
   };
@@ -599,6 +639,19 @@ function msgRowHTML(it, i, total) {
 
 const openRows = new Set();
 let scriptDraft = '', scriptOpen = false;
+let emojiDraft = '', emojiOpen = false;
+
+// one collapsed line at the bottom of every tab's panel
+function emojiSection() {
+  const map = state.emoji || {};
+  const keys = Object.keys(map);
+  return `<div class="sec"><details class="emoji-sec" ${emojiOpen ? 'open' : ''}>
+    <summary>Custom emoji${keys.length ? ` (${keys.length})` : ''}</summary>
+    <p class="hint">Paste an emoji, then upload a picture of it — a PNG with a transparent background, like Apple’s version. Your picture is used wherever that emoji appears, in every tab.</p>
+    <div class="row"><input class="txt emoji-in" id="emojiIn" value="${esc(emojiDraft)}" placeholder="😂" maxlength="16" aria-label="Emoji"><button class="btn sm" data-act="emoji-up">Upload picture</button></div>
+    ${keys.length ? `<div class="emoji-list">${keys.map((k) => `<span class="emoji-chip"><img src="${esc(map[k])}" alt="${esc(k)}"><span>${esc(k)}</span><button class="icon-btn" data-act="emoji-del" data-v="${esc(k)}" title="Remove">✕</button></span>`).join('')}</div>` : ''}
+  </details></div>`;
+}
 
 const EXTRAS = createExtras({
   S: () => state, esc, rich, avatar, seg, text, check, range, area, rootClasses,
@@ -731,7 +784,7 @@ function notifPanel() {
 let focusAfterRender = null;
 function renderPanel() {
   const top = panel.scrollTop;
-  panel.innerHTML = state.mode === 'chat' ? chatPanel() : state.mode === 'notif' ? notifPanel() : animSection() + extra().panel();
+  panel.innerHTML = (state.mode === 'chat' ? chatPanel() : state.mode === 'notif' ? notifPanel() : animSection() + extra().panel()) + emojiSection();
   const grow = () => panel.querySelectorAll('textarea').forEach(autoGrow);
   grow();
   panel.scrollTop = top; // heights were collapsed while the rows rebuilt
@@ -785,6 +838,7 @@ panel.addEventListener('input', (e) => {
   const t = e.target;
   if (t.tagName === 'TEXTAREA') autoGrow(t);
   if (t.id === 'scriptIn') { scriptDraft = t.value; return; }
+  if (t.id === 'emojiIn') { emojiDraft = t.value; return; }
   if (t.dataset.k) {
     const v = t.type === 'checkbox' ? t.checked : t.type === 'range' ? Number(t.value) : t.value;
     setPath(t.dataset.k, v);
@@ -826,6 +880,7 @@ panel.addEventListener('input', (e) => {
 // 'toggle' doesn't bubble
 panel.addEventListener('toggle', (e) => {
   if (e.target.matches?.('details.script')) scriptOpen = e.target.open;
+  if (e.target.matches?.('details.emoji-sec')) emojiOpen = e.target.open;
 }, true);
 
 panel.addEventListener('keydown', (e) => {
@@ -876,6 +931,22 @@ panel.addEventListener('click', (e) => {
     case 'avatar-clear': (it || (state.mode === 'call' ? state.call : c)).avatar = null; break;
     case 'bg-img': return pickImage(1600, (url) => { state.call.bgImage = url; commit(true); });
     case 'role': it.role = b.dataset.v; break;
+    case 'emoji-up': {
+      const seg = [...segmenter.segment(emojiDraft.trim())][0]?.segment || '';
+      if (!/\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20E3/u.test(seg)) return toast('Paste the emoji first, then upload its picture');
+      return pickImage(1024, (url) => {
+        state.emoji = { ...state.emoji, [emojiKey(seg)]: url };
+        emojiDraft = '';
+        commit(true);
+        toast(`${seg} now uses your picture`);
+      }, { emoji: true });
+    }
+    case 'emoji-del': {
+      const map = { ...state.emoji };
+      delete map[b.dataset.v];
+      state.emoji = map;
+      break;
+    }
     case 'icon': return pickImage(256, (url) => { it.icon = url; commit(true); });
     case 'icon-clear': it.icon = null; break;
     case 'thumb': return pickImage(600, (url) => { it.thumb = url; commit(true); });
