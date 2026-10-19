@@ -641,11 +641,11 @@ const openRows = new Set();
 let scriptDraft = '', scriptOpen = false;
 let emojiDraft = '', emojiOpen = false;
 
-// one line at the bottom of every tab's panel: custom emoji (collapsed) + reset this tab
+// one collapsed line at the bottom of every tab's panel
 function emojiSection() {
   const map = state.emoji || {};
   const keys = Object.keys(map);
-  return `<div class="sec panel-foot"><button class="btn sm ghost reset-tab" data-act="reset-tab" title="Restore this tab to its example content">↺ Reset tab</button><details class="emoji-sec" ${emojiOpen ? 'open' : ''}>
+  return `<div class="sec"><details class="emoji-sec" ${emojiOpen ? 'open' : ''}>
     <summary>Custom emoji${keys.length ? ` (${keys.length})` : ''}</summary>
     <p class="hint">Paste an emoji, then upload a picture of it — a PNG with a transparent background, like Apple’s version. Your picture is used wherever that emoji appears, in every tab.</p>
     <div class="row"><input class="txt emoji-in" id="emojiIn" value="${esc(emojiDraft)}" placeholder="😂" maxlength="16" aria-label="Emoji"><button class="btn sm" data-act="emoji-up">Upload picture</button></div>
@@ -947,15 +947,6 @@ panel.addEventListener('click', (e) => {
       state.emoji = map;
       break;
     }
-    case 'reset-tab': {
-      // only the open tab goes back to its example — other tabs, custom emoji and settings stay
-      const name = $(`#modeTabs [data-mode="${state.mode}"]`)?.textContent || 'This tab';
-      if (!confirm(`Reset ${name} to its example content?\n\nWhat you’ve made in ${name} will be replaced. Other tabs, custom emoji and settings stay as they are.`)) return;
-      state[state.mode] = defaults()[state.mode];
-      if (state.mode === 'chat') { openRows.clear(); scriptDraft = ''; }
-      toast(`${name} reset`);
-      break;
-    }
     case 'icon': return pickImage(256, (url) => { it.icon = url; commit(true); });
     case 'icon-clear': it.icon = null; break;
     case 'thumb': return pickImage(600, (url) => { it.thumb = url; commit(true); });
@@ -1023,6 +1014,15 @@ $('#modeTabs').addEventListener('click', (e) => {
   state.mode = b.dataset.mode;
   save();
   renderAll();
+});
+// only the open tab goes back to its example — other tabs, custom emoji and settings stay
+$('#resetTab').addEventListener('click', () => {
+  const name = $(`#modeTabs [data-mode="${state.mode}"]`)?.textContent || 'This tab';
+  if (!confirm(`Reset ${name} to its example content?\n\nWhat you’ve made in ${name} will be replaced. Other tabs, custom emoji and settings stay as they are.`)) return;
+  state[state.mode] = defaults()[state.mode];
+  if (state.mode === 'chat') { openRows.clear(); scriptDraft = ''; }
+  toast(`${name} reset`);
+  commit(true);
 });
 $('#themeSeg').addEventListener('click', (e) => {
   const b = e.target.closest('button');
