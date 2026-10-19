@@ -491,8 +491,8 @@ const scaler = $('#scaler');
 const canvas = $('#canvas');
 
 function renderPreview() {
-  document.body.classList.toggle('animated', state.anim.on);
-  if (state.anim.on) return scheduleAnimBuild();
+  document.body.classList.toggle('animated', animOn());
+  if (animOn()) return scheduleAnimBuild();
   host.innerHTML = renderMode();
   fitPreview();
   // Safari decodes data: URLs async, so photos can still be 0×0 here — re-fit once they arrive
@@ -508,8 +508,11 @@ function fitPreview() {
   host.style.transform = `scale(${s})`;
   scaler.style.width = `${w * s}px`;
   scaler.style.height = `${h * s}px`;
-  const dur = state.anim.on && anim ? ` · ${anim.duration.toFixed(1)}s @ ${state.anim.fps}fps` : '';
-  $('#dims').textContent = `${Math.round(w * state.scale)} × ${Math.round(h * state.scale)}px${dur}`;
+  const dur = animOn() && anim ? ` · ${anim.duration.toFixed(1)}s @ ${state.anim.fps}fps` : '';
+  // a full-screen ChatGPT thread taller than the screen gets cut off at the bottom
+  const body = el.querySelector?.('.gp-body');
+  const cut = body && body.scrollHeight > body.clientHeight + 1 ? ' · ⚠ chat is taller than the screen — shorten it or use Chat only' : '';
+  $('#dims').textContent = `${Math.round(w * state.scale)} × ${Math.round(h * state.scale)}px${dur}${cut}`;
 }
 new ResizeObserver(fitPreview).observe(canvas);
 
@@ -569,10 +572,12 @@ const EXTRAS = createExtras({
   ICONS: { PHONE_PATH, MIC_SVG, SIGNAL_SVG, BATTERY_SVG, wifiSVG },
 });
 const extra = () => EXTRAS[state.mode];
+const canAnimate = () => !extra() || !!extra().scene;
+const animOn = () => state.anim.on && canAnimate();
 const renderMode = () => (state.mode === 'chat' ? renderChat() : state.mode === 'notif' ? renderNotifs() : extra().render());
 
 function animSection() {
-  if (!state.anim.on) return '';
+  if (!animOn()) return '';
   return `<div class="sec">
     <h3>Animation</h3>
     <div class="row">${range('anim.speed', 'Speed', 0.5, 2, 0.1, 'x')}${range('anim.endHold', 'Hold at end', 0, 5, 0.1, 's')}</div>
@@ -631,7 +636,7 @@ function chatPanel() {
     <div class="row">${select('chat.receipt', 'Receipt under last sent', [['none', 'None'], ['delivered', 'Delivered'], ['read', 'Read']])}
       ${c.receipt === 'read' ? text('chat.receiptTime', 'Read time') : '<div class="field"></div>'}</div>
   </div>
-  <div class="sec" ${state.anim.on ? 'hidden' : ''}>
+  <div class="sec" ${animOn() ? 'hidden' : ''}>
     <h3>Build sequence export</h3>
     <div class="row">${check('chat.seqTyping', 'Add typing frame before each received message')}</div>
     ${phone ? '' : `<div class="row">${seg('chat.anchor', [['bottom', 'Grow upward (anchor bottom)'], ['top', 'Grow downward (anchor top)']])}</div>`}
@@ -719,11 +724,12 @@ function renderAll() {
   document.querySelectorAll('#modeTabs button').forEach((b) => b.classList.toggle('on', b.dataset.mode === state.mode));
   document.querySelectorAll('#themeSeg button').forEach((b) => b.classList.toggle('on', b.dataset.theme === state.theme));
   document.querySelectorAll('#animSeg button').forEach((b) => b.classList.toggle('on', (b.dataset.anim === 'on') === state.anim.on));
+  $('#animSeg').style.display = canAnimate() ? '' : 'none'; // comments, calls and mail are stills only
   $('#scaleSel').value = String(state.scale);
   $('#bgSel').value = state.bg;
   $('#fpsSel').value = String(state.anim.fps);
   anim = null; // mode/theme may have changed — rebuild from scratch
-  if (state.anim.on && !$('#animCanvas')) host.innerHTML = '';
+  if (animOn() && !$('#animCanvas')) host.innerHTML = '';
   renderPanel();
   renderPreview();
 }
@@ -751,9 +757,10 @@ panel.addEventListener('input', (e) => {
     setPath(t.dataset.k, v);
     const out = panel.querySelector(`[data-out="${t.dataset.k}"]`);
     if (out) out.textContent = FMT[t.dataset.fmt](v);
-    if (t.dataset.k === 'chat.name') {
+    if (t.dataset.k === 'chat.name' || t.dataset.k === 'call.name') {
+      const who = t.dataset.k === 'chat.name' ? state.chat : state.call;
       const th = panel.querySelector('.avatar-pick .thumb');
-      if (th) th.outerHTML = avatar(state.chat.avatar, state.chat.name, 40, 'thumb');
+      if (th) th.outerHTML = avatar(who.avatar, who.name, 40, 'thumb');
     }
     commit(t.tagName === 'SELECT'); // selects can change which controls are visible
     return;
@@ -769,9 +776,9 @@ panel.addEventListener('input', (e) => {
       row.querySelectorAll('[data-act="tb"]').forEach((b) => b.classList.toggle('on', b.dataset.v === t.value));
       row.querySelector('[data-act="more"]')?.classList.toggle('on', !!(it.tapback || it.image));
     }
-    if (t.dataset.f === 'title') {
+    if (['title', 'user', 'from'].includes(t.dataset.f)) { // fields that drive a row's initials
       const th = row.querySelector('.avatar-pick .thumb');
-      if (th) th.outerHTML = avatar(it.avatar, it.title, 34, 'thumb');
+      if (th) th.outerHTML = avatar(it.avatar, t.value, 34, 'thumb');
     }
     if (t.dataset.f === 'appName') {
       const ic = row.querySelector('.avatar-pick .appicon');
@@ -1104,7 +1111,7 @@ async function buildPreviewAnim() {
       isStale: () => token !== animToken,
       onProgress: (i, n) => animStatus(`Preparing ${i + 1}/${n}…`),
     });
-    if (token !== animToken || !state.anim.on) return;
+    if (token !== animToken || !animOn()) return;
     anim = a;
     let cv = $('#animCanvas');
     if (!cv) {
@@ -1135,7 +1142,7 @@ function drawFrame() {
 }
 
 function tick(ts) {
-  if (!state.anim.on) { rafId = null; lastTs = 0; return; }
+  if (!animOn()) { rafId = null; lastTs = 0; return; }
   const dt = lastTs ? Math.min(0.1, (ts - lastTs) / 1000) : 0;
   lastTs = ts;
   if (anim && playing) {
@@ -1189,7 +1196,7 @@ async function exportFrames(progress) {
 let exporting = null; // { k, text } while an export runs
 
 function renderExportButtons() {
-  const btns = state.anim.on
+  const btns = animOn()
     ? [['mov', 'Export .mov (alpha)', true], ['frames', 'PNG frames .zip']]
     : extra()
       ? [['png', 'Download PNG', true]]

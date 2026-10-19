@@ -316,7 +316,9 @@ export async function buildNotifAnim(d, scale, { onProgress, isStale } = {}) {
    The final state is laid out once; elements tagged by a layer selector are captured separately
    and brought in on a timeline. Times are seconds, speed already applied by the caller.
    d = { html, bgFill, intro: 'none'|'fade'|'drop', outro: null|{ start, dur }, duration,
-         layers: [{ sel, fx: 'show'|'fade'|'pop'|'drop'|'rise'|'type'|'blink'|'pulse', start, dur, end, anchor, caret, caretAfter }] } */
+         layers: [{ sel, fx: 'show'|'fade'|'pop'|'drop'|'rise'|'keys'|'stream'|'blink'|'pulse', start, dur, end, anchor, caret, caretAfter }] }
+   'keys' types one character at a time with a caret; 'stream' brings words in one by one with a quick fade.
+   under: true draws a layer beneath the static base (e.g. a background that changes size). */
 export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
   const stage = newStage();
   try {
@@ -337,28 +339,54 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
       const x0 = Math.min(...rs.map((r) => r.x)), y0 = Math.min(...rs.map((r) => r.y));
       return { x: x0, y: y0, w: Math.max(...rs.map((r) => r.x + r.w)) - x0, h: Math.max(...rs.map((r) => r.y + r.h)) - y0 };
     };
-    // visual line boxes of an element's text (and inline images), in reading order
-    const lineBoxes = (el) => {
+    // Characters (or words) of an element in reading order, each with its on-screen box(es),
+    // grouped into visual lines — so typing can reveal exactly one character/word at a time.
+    const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    const wordsSeg = new Intl.Segmenter(undefined, { granularity: 'word' });
+    const textUnits = (el, byWord) => {
       const b = root.getBoundingClientRect();
-      const rects = [];
+      const units = [], lines = [];
+      const lineOf = (top, bottom) => {
+        const mid = (top + bottom) / 2;
+        let i = lines.findIndex((l) => Math.abs(l.mid - mid) < Math.max(4, (bottom - top) / 3));
+        if (i < 0) { lines.push({ top, bottom, mid, right: 0 }); i = lines.length - 1; }
+        const l = lines[i];
+        l.top = Math.min(l.top, top); l.bottom = Math.max(l.bottom, bottom);
+        return i;
+      };
+      const add = (rects, text) => {
+        const boxes = rects.filter((x) => x.width > 0 && x.height > 0).map((x) => {
+          const top = x.top - b.top, bottom = x.bottom - b.top;
+          return { line: lineOf(top, bottom), x: x.left - b.left, right: x.right - b.left };
+        });
+        units.push({ boxes, space: !text.trim() && text !== 'img', end: /[.!?:]$/.test(text) });
+      };
       const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
       for (let n = walk.currentNode; n; n = walk.nextNode()) {
-        if (n.nodeType === 3 && n.textContent.trim()) {
-          const r = document.createRange();
-          r.selectNodeContents(n);
-          rects.push(...r.getClientRects());
-        } else if (n.tagName === 'IMG') rects.push(n.getBoundingClientRect());
+        if (n.nodeType === 3) {
+          for (const { segment, index } of (byWord ? wordsSeg : graphemes).segment(n.textContent)) {
+            const r = document.createRange();
+            r.setStart(n, index);
+            r.setEnd(n, index + segment.length);
+            add([...r.getClientRects()], segment);
+          }
+        } else if (n.tagName === 'IMG') add([n.getBoundingClientRect()], 'img');
       }
-      const lines = [];
-      for (const x of rects) {
-        if (!x.width || !x.height) continue;
-        const top = x.top - b.top, bottom = x.bottom - b.top, mid = (top + bottom) / 2;
-        const ln = lines.find((l) => Math.abs(l.mid - mid) < Math.max(4, (bottom - top) / 3));
-        if (ln) Object.assign(ln, { top: Math.min(ln.top, top), bottom: Math.max(ln.bottom, bottom), left: Math.min(ln.left, x.left - b.left), right: Math.max(ln.right, x.right - b.left) });
-        else lines.push({ top, bottom, mid, left: x.left - b.left, right: x.right - b.left });
-      }
-      lines.sort((p, q) => p.top - q.top || p.left - q.left);
-      return lines;
+      // drop leading/trailing whitespace-only text (template indentation) so timing isn't wasted on it
+      while (units.length && units[0].space) units.shift();
+      while (units.length && units[units.length - 1].space) units.pop();
+      return { units, lines };
+    };
+    // deterministic jitter so the rhythm feels human but every render matches
+    const jitter = (i) => { const x = Math.sin(i * 12.9898 + 78.233) * 43758.5453; return x - Math.floor(x); };
+    const schedule = (units, byWord) => {
+      const w = units.map((u, i) => {
+        if (byWord) return u.space ? 0.12 : 0.7 + 0.6 * jitter(i) + (u.end ? 1.6 : 0);
+        return 0.55 + 0.9 * jitter(i) + (units[i - 1]?.space ? 0.7 : 0); // small beat after each space
+      });
+      const total = w.reduce((a, v) => a + v, 0) || 1;
+      let acc = 0;
+      return w.map((v) => { acc += v; return (acc - v) / total; }); // start fraction of each unit
     };
 
     all.forEach((e) => { e.style.visibility = 'hidden'; });
@@ -373,9 +401,21 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
       const img = crop(cv, scale, u.y - 30, u.h + 60);
       const ax = { tl: u.x, bl: u.x, tr: u.x + u.w, br: u.x + u.w }[l.anchor] ?? u.x + u.w / 2;
       const ay = { tl: u.y, tr: u.y, bl: u.y + u.h, br: u.y + u.h }[l.anchor] ?? u.y + u.h / 2;
-      const lines = l.fx === 'type' ? l.els.flatMap(lineBoxes) : null;
-      const total = lines ? lines.reduce((s, ln) => s + (ln.right - ln.left), 0) : 0;
-      layers.push({ ...l, img, u, ax, ay, lines, total, dur: l.dur || 0.001 });
+      let text = null;
+      if (l.fx === 'keys' || l.fx === 'stream') {
+        text = textUnits(l.els[0], l.fx === 'stream');
+        text.at = schedule(text.units, l.fx === 'stream');
+      }
+      layers.push({ ...l, img, u, ax, ay, text, dur: l.dur || 0.001 });
+    }
+    // a typing layer can swap a one-line background for the full one when the text wraps
+    for (const l of layers) {
+      if (!l.grow || !l.text) continue;
+      const [shortL, fullL] = l.grow.map((id) => layers.find((x) => x.id === id));
+      if (!shortL || !fullL) continue;
+      const i = l.text.units.findIndex((u) => u.boxes.some((bx) => bx.line > 0));
+      if (i < 0) { shortL.end = undefined; fullL.start = Infinity; continue; }
+      shortL.end = fullL.start = l.start + l.text.at[i] * l.dur;
     }
 
     const introDur = d.intro === 'drop' ? 0.6 : d.intro === 'fade' ? 0.35 : 0;
@@ -383,7 +423,7 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
     const moving = (l, t) => {
       if (t < l.start || (l.end != null && t >= l.end)) return false;
       if (l.fx === 'blink' || l.fx === 'pulse') return true;
-      if (l.fx === 'type' && l.caretAfter && l.caret) return true; // caret keeps blinking
+      if (l.fx === 'keys' && l.caretAfter && l.caret) return true; // caret keeps blinking
       return t < l.start + l.dur;
     };
 
@@ -412,8 +452,10 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
         }
         ctx.globalAlpha = alpha;
         ctx.translate(0, Math.round(dy * scale));
-        ctx.drawImage(base, 0, 0);
-        for (const l of layers) {
+        // 'under' layers (backgrounds) go beneath the static base, the rest on top
+        const order = [...layers.filter((l) => l.under), { isBase: true }, ...layers.filter((l) => !l.under)];
+        for (const l of order) {
+          if (l.isBase) { ctx.drawImage(base, 0, 0); continue; }
           if (t < l.start || (l.end != null && t >= l.end)) continue;
           const p = clamp01((t - l.start) / l.dur);
           const put = () => ctx.drawImage(l.img.img, 0, l.img.y);
@@ -435,27 +477,56 @@ export async function buildSceneAnim(d, scale, { onProgress, isStale } = {}) {
           } else if (l.fx === 'rise') {
             ctx.globalAlpha *= easeOut(p);
             ctx.translate(0, Math.round(lerp(14, 0, easeOut(p)) * scale));
-          } else if (l.fx === 'type' && l.lines.length) {
-            // reveal line by line, left to right; bullets/markers left of a line show with it
-            let dist = p * l.total, cx = null, cy = null, ch = 0;
-            ctx.beginPath();
-            for (const ln of l.lines) {
-              const w = ln.right - ln.left;
-              const shown = Math.min(w, dist);
-              if (shown <= 0) break;
-              ctx.rect(0, Math.floor((ln.top - 2) * scale), Math.ceil((ln.left + shown) * scale), Math.ceil((ln.bottom - ln.top + 4) * scale));
-              cx = ln.left + shown; cy = ln.top; ch = ln.bottom - ln.top;
-              dist -= w;
+          } else if ((l.fx === 'keys' || l.fx === 'stream') && l.text.units.length) {
+            const { units, lines, at } = l.text;
+            const FADE = 0.12; // seconds a streamed word takes to fade in
+            const tt = t - l.start;
+            const shownAt = (i) => at[i] * l.dur; // seconds after start when unit i appears
+            // whole units revealed so far: per line, everything left of the furthest revealed box
+            // (so list bullets / markers come in with their line)
+            const reach = new Map();
+            let last = -1;
+            for (let i = 0; i < units.length && shownAt(i) <= tt; i++) {
+              if (l.fx === 'stream' && tt < shownAt(i) + FADE) break;
+              for (const bx of units[i].boxes) reach.set(bx.line, Math.max(reach.get(bx.line) ?? 0, bx.right));
+              last = i;
             }
-            if (cx == null) { const ln = l.lines[0]; cx = ln.left; cy = ln.top; ch = ln.bottom - ln.top; }
-            ctx.save();
-            ctx.clip();
-            put();
-            ctx.restore();
-            const blinkOn = p < 1 || (l.caretAfter && Math.floor((t - l.start - l.dur) * 2) % 2 === 0);
-            if (l.caret && blinkOn) {
-              ctx.fillStyle = l.caret;
-              ctx.fillRect(Math.round((cx + 1) * scale), Math.round((cy + ch * 0.1) * scale), Math.max(1, Math.round(2 * scale)), Math.round(ch * 0.8 * scale));
+            const band = (li, x0, x1) => ctx.rect(Math.floor(x0 * scale), Math.floor((lines[li].top - 2) * scale), Math.ceil((x1 - x0) * scale) + 1, Math.ceil((lines[li].bottom - lines[li].top + 4) * scale));
+            if (reach.size) {
+              ctx.save();
+              ctx.beginPath();
+              for (const [li, r] of reach) band(li, 0, r);
+              ctx.clip();
+              put();
+              ctx.restore();
+            }
+            if (l.fx === 'stream') {
+              // the next few words fade in on top
+              for (let i = last + 1; i < units.length && shownAt(i) <= tt; i++) {
+                const a = clamp01((tt - shownAt(i)) / FADE);
+                ctx.save();
+                ctx.globalAlpha *= a;
+                ctx.beginPath();
+                for (const bx of units[i].boxes) band(bx.line, reach.has(bx.line) ? bx.x : 0, bx.right);
+                ctx.clip();
+                put();
+                ctx.restore();
+              }
+            }
+            if (l.fx === 'keys' && l.caret) {
+              const done = tt >= l.dur;
+              const on = !done || (l.caretAfter && Math.floor((tt - l.dur) * 2) % 2 === 0);
+              // caret sits after the last visible character (or before the first one)
+              let box = null;
+              for (let i = last; i >= 0 && !box; i--) box = units[i].boxes[units[i].boxes.length - 1];
+              const first = units.find((u) => u.boxes.length)?.boxes[0];
+              const cx = box ? box.right : first?.x;
+              const ln = lines[(box || first)?.line];
+              if (on && ln) {
+                const h = ln.bottom - ln.top;
+                ctx.fillStyle = l.caret;
+                ctx.fillRect(Math.round((cx + 1) * scale), Math.round((ln.top + h * 0.1) * scale), Math.max(1, Math.round(2 * scale)), Math.round(h * 0.8 * scale));
+              }
             }
             ctx.restore();
             continue;

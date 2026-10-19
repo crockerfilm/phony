@@ -22,12 +22,12 @@ export const EXTRA_DEFAULTS = () => ({
     ],
   },
   comment: {
-    style: 'ig', width: 361, card: true, intro: 'none',
+    style: 'ig', width: 361, card: true,
     items: [comment(), comment({ user: 'hairbysam', text: 'been using these for 6 months and nobody can tell 😍', likes: '892', time: '1d', liked: true })],
   },
-  call: { style: 'banner', name: 'Mom', label: '', avatar: null, bg: 'gray', bgImage: null, width: 361, intro: 'drop', slideOut: false },
+  call: { style: 'banner', name: 'Mom', label: '', avatar: null, bg: 'gray', bgImage: null, width: 361 },
   mail: {
-    width: 393, avatars: false, intro: 'none',
+    width: 393, avatars: false,
     items: [mailRow(), mailRow({ from: 'Chase', subject: 'Your statement is ready', preview: 'Your October statement for account ending in 4821 is now available to view online.', time: 'Yesterday', unread: false })],
   },
 });
@@ -102,7 +102,7 @@ export function createExtras(h) {
     },
     animControls() {
       return `${introSeg('search.intro')}<div class="row">${range('search.typeSpeed', 'Typing speed', 0.5, 2, 0.1, 'x')}</div>
-        <p class="hint">Blinking cursor → the search types out → suggestions slide in.</p>`;
+        <p class="hint">Blinking cursor → the search types out letter by letter → suggestions slide in.</p>`;
     },
     render({ anim = false } = {}) {
       const s = S().search;
@@ -112,9 +112,11 @@ export function createExtras(h) {
       const caret0 = anim ? '<span class="s-caret" data-l="c0"></span>' : '';
       const typed = q ? `<span class="s-q" data-l="q">${rich(q)}</span>` : '';
       const field = `<div class="s-field">${ph}${caret0}${typed}</div>`;
+      // the bar's background is its own element: one line tall until typing wraps, then full height
+      const bg = anim ? '<span class="s-bg one" data-l="bg1"></span><span class="s-bg" data-l="bgN"></span>' : '<span class="s-bg"></span>';
       const bar = g
-        ? `<div class="s-bar g-bar"><span class="s-lead">${s.logo ? G_LOGO : MAG}</span>${field}<span class="s-ic">${ICONS.MIC_SVG}</span><span class="s-ic">${LENS}</span></div>`
-        : `<div class="s-top"><div class="s-bar sf-bar"><span class="s-ic">${MAG}</span>${field}${q ? `<span class="s-clear">${CLEAR}</span>` : ''}</div><span class="sf-cancel">Cancel</span></div>`;
+        ? `<div class="s-bar g-bar">${bg}<span class="s-lead">${s.logo ? G_LOGO : MAG}</span>${field}<span class="s-ic">${ICONS.MIC_SVG}</span><span class="s-ic">${LENS}</span></div>`
+        : `<div class="s-top"><div class="s-bar sf-bar">${bg}<span class="s-ic">${MAG}</span>${field}${q ? `<span class="s-clear">${CLEAR}</span>` : ''}</div><span class="sf-cancel">Cancel</span></div>`;
       const sugs = s.suggest ? lines(s.suggestions).slice(0, 8) : [];
       const sugHTML = sugs.length ? `<div class="s-sugs" data-l="sugs">${sugs.map((x) => {
         const low = x.toLowerCase(), pre = q.toLowerCase();
@@ -125,14 +127,16 @@ export function createExtras(h) {
     },
     scene(speed) {
       const s = S().search;
-      const n = [...s.query.trim()].length;
+      const n = [...new Intl.Segmenter().segment(s.query.trim())].length;
       let t = s.intro === 'none' ? 0.2 : 0.55;
-      const typeAt = t + 0.6 / speed;
-      const typeDur = Math.max(0.3, n * 0.065 / (s.typeSpeed * speed));
+      const typeAt = t + 0.7 / speed; // a beat with the blinking cursor first
+      const typeDur = Math.max(0.3, n * 0.1 / (s.typeSpeed * speed)); // ~10 characters a second
       const layers = [
+        { id: 'bg1', sel: '[data-l="bg1"]', fx: 'show', start: 0, under: true },
+        { id: 'bgN', sel: '[data-l="bgN"]', fx: 'show', start: Infinity, under: true },
         { sel: '[data-l="ph"]', fx: 'show', start: 0, end: typeAt },
         { sel: '[data-l="c0"]', fx: 'blink', start: t, end: typeAt },
-        { sel: '[data-l="q"]', fx: 'type', start: typeAt, dur: typeDur, caret: s.style === 'google' ? '#1a73e8' : '#007aff', caretAfter: true },
+        { sel: '[data-l="q"]', fx: 'keys', start: typeAt, dur: typeDur, caret: s.style === 'google' ? '#1a73e8' : '#007aff', caretAfter: true, grow: ['bg1', 'bgN'] },
       ];
       t = typeAt + typeDur + 0.15 / speed;
       if (s.suggest) {
@@ -184,7 +188,7 @@ export function createExtras(h) {
         <div class="add-row"><button class="btn sm" data-act="add" data-v="user">+ Prompt</button><button class="btn sm" data-act="add" data-v="assistant">+ Answer</button></div>
       </div>`;
     },
-    animControls: () => `${introSeg('gpt.intro')}<p class="hint">Prompts slide in, a thinking dot pulses, then the answer streams in line by line.</p>`,
+    animControls: () => `${introSeg('gpt.intro')}<p class="hint">Prompts slide in, a thinking dot pulses, then the answer streams in word by word.</p>`,
     render({ anim = false } = {}) {
       const g = S().gpt;
       const phone = g.layout === 'phone';
@@ -208,10 +212,10 @@ export function createExtras(h) {
           t += (0.35 + 0.5) / speed;
         } else {
           const think = 1.1 / speed;
-          const chars = it.text.length;
-          const dur = Math.min(9, Math.max(0.6, chars / 75)) / speed;
+          const words = it.text.trim().split(/\s+/).filter(Boolean).length;
+          const dur = Math.min(14, Math.max(0.5, words * 0.075)) / speed; // ~13 words a second
           layers.push({ sel: `[data-l="d${i}"]`, fx: 'pulse', start: t, end: t + think, anchor: 'center' });
-          layers.push({ sel: `[data-l="a${i}"]`, fx: 'type', start: t + think, dur });
+          layers.push({ sel: `[data-l="a${i}"]`, fx: 'stream', start: t + think, dur });
           layers.push({ sel: `[data-l="x${i}"]`, fx: 'fade', start: t + think + dur + 0.1 / speed, dur: 0.3 / speed });
           t += think + dur + 0.9 / speed;
         }
@@ -241,7 +245,6 @@ export function createExtras(h) {
         <div class="add-row"><button class="btn sm" data-act="add">+ Comment</button></div>
       </div>`;
     },
-    animControls: () => `${introSeg('comment.intro')}<p class="hint">Comments pop in one at a time.</p>`,
     render() {
       const c = S().comment;
       if (c.style === 'sticker') {
@@ -260,17 +263,6 @@ export function createExtras(h) {
       </div>`).join('');
       return root('cm-wrap', `width:${c.width}px`, `<div class="cm-list${c.card ? ' cm-card' : ''}">${rows}</div>`, [`cm-${c.style}`]);
     },
-    scene(speed) {
-      const c = S().comment;
-      let t = c.intro === 'none' ? 0.3 : 0.6;
-      const n = c.style === 'sticker' ? 1 : c.items.length;
-      const layers = [...Array(n)].map((_, i) => {
-        const l = { sel: `[data-l="r${i}"]`, fx: 'pop', start: t, dur: 0.45 / speed, anchor: c.style === 'sticker' ? 'center' : 'tl' };
-        t += 0.9 / speed;
-        return l;
-      });
-      return { html: this.render(), intro: c.intro, layers, end: t };
-    },
   };
 
   /* ───────────── Calls ───────────── */
@@ -288,12 +280,6 @@ export function createExtras(h) {
         : `<div class="row">${range('call.width', 'Width', 300, 440, 1, 'pt')}</div>`}
       </div>`;
     },
-    animControls() {
-      const c = S().call;
-      return c.style === 'banner'
-        ? `${introSeg('call.intro')}<div class="row">${check('call.slideOut', 'Slide out at end')}</div>`
-        : `${introSeg('call.intro')}<p class="hint">The screen fades in and the answer buttons rise up.</p>`;
-    },
     render() {
       const c = S().call;
       const ft = c.style === 'facetime';
@@ -310,22 +296,6 @@ export function createExtras(h) {
         <div class="cf-small" data-l="small"><div class="cf-sb"><span class="cf-si">${ALARM}</span>Remind Me</div><div class="cf-sb"><span class="cf-si">${BUBBLE}</span>Message</div></div>
         <div class="cf-btns" data-l="btns"><div class="cf-b"><span class="cf-circle red">${HANGUP}</span>Decline</div><div class="cf-b"><span class="cf-circle green">${ft ? VIDEO : PHONE}</span>Accept</div></div>
         ${homebar(true)}`, ['phone']);
-    },
-    scene(speed) {
-      const c = S().call;
-      if (c.style === 'banner') {
-        // the hold before the slide-out comes from "Hold at end"
-        return { html: this.render(), intro: c.intro, layers: [], end: c.intro === 'none' ? 0.2 : 0.7, outro: c.slideOut ? { dur: 0.45 / speed } : null };
-      }
-      const t = c.intro === 'none' ? 0.2 : 0.45;
-      return {
-        html: this.render(), intro: c.intro,
-        layers: [
-          { sel: '[data-l="small"]', fx: 'rise', start: t, dur: 0.4 / speed },
-          { sel: '[data-l="btns"]', fx: 'rise', start: t + 0.12 / speed, dur: 0.45 / speed },
-        ],
-        end: t + 0.8 / speed,
-      };
     },
   };
 
@@ -351,7 +321,6 @@ export function createExtras(h) {
         <div class="add-row"><button class="btn sm" data-act="add">+ Email</button></div>
       </div>`;
     },
-    animControls: () => `${introSeg('mail.intro')}<p class="hint">Emails slide in from the top, newest first.</p>`,
     render() {
       const m = S().mail;
       const rows = m.items.map((it, i) => `<div class="ml-row" data-l="m${i}">
@@ -363,16 +332,6 @@ export function createExtras(h) {
           <div class="ml-prev" dir="auto">${rich(it.preview)}</div>
         </div></div>`).join('');
       return root('ml-wrap', `width:${m.width}px`, `<div class="ml-list">${rows}</div>`);
-    },
-    scene(speed) {
-      const m = S().mail;
-      let t = m.intro === 'none' ? 0.3 : 0.6;
-      const layers = m.items.map((_, i) => i).reverse().map((i) => {
-        const l = { sel: `[data-l="m${i}"]`, fx: 'drop', start: t, dur: 0.55 / speed };
-        t += 0.9 / speed;
-        return l;
-      });
-      return { html: this.render(), intro: m.intro, layers, end: t };
     },
   };
 

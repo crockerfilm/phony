@@ -389,8 +389,14 @@ body.animated .anim-only { display: flex !important; }
 .s-safari { --s-bg: rgba(118,118,128,.12); --s-ink: var(--label); --s-dim: var(--label-2); --clear-x: #fff; }
 .mock.dark.s-safari { --s-bg: rgba(118,118,128,.24); --clear-x: #1c1c1e; }
 .s-bar { display: flex; align-items: center; gap: 12px; color: var(--s-ink); }
-.g-bar { min-height: 52px; padding-top: 13px !important; padding-bottom: 13px !important; align-items: flex-start; border-radius: 26px; background: var(--s-bg); padding: 0 16px 0 14px; box-shadow: 0 1px 6px rgba(32,33,36,.28); }
-.mock.dark .g-bar { box-shadow: none; }
+.g-bar { min-height: 52px; padding: 13px 16px 13px 14px; align-items: flex-start; }
+.s-bar { position: relative; }
+.s-bar > :not(.s-bg) { position: relative; }
+.s-bg { position: absolute; inset: 0; border-radius: 26px; background: var(--s-bg); box-shadow: 0 1px 6px rgba(32,33,36,.28); }
+.s-bg.one { bottom: auto; height: 52px; }
+.s-safari .s-bg { border-radius: 12px; box-shadow: none; }
+.s-safari .s-bg.one { height: 44px; }
+.mock.dark .s-bg { box-shadow: none; }
 .s-lead { width: 24px; height: 24px; flex: none; color: var(--s-dim); display: grid; place-items: center; }
 .s-lead svg, .s-ic svg { width: 100%; height: 100%; display: block; }
 .s-ic { width: 22px; height: 22px; flex: none; color: var(--s-dim); }
@@ -404,7 +410,7 @@ body.animated .anim-only { display: flex !important; }
 .s-safari .s-caret { background: #007aff; }
 .s-q { color: var(--s-ink); }
 .s-top { display: flex; align-items: center; gap: 12px; }
-.sf-bar { flex: 1; min-height: 44px; padding-top: 10px !important; padding-bottom: 10px !important; align-items: flex-start; border-radius: 12px; background: var(--s-bg); padding: 0 8px 0 10px; gap: 6px; }
+.sf-bar { flex: 1; min-height: 44px; padding: 10px 8px 10px 10px; align-items: flex-start; gap: 6px; }
 .sf-bar .s-ic { width: 18px; height: 18px; }
 .sf-cancel { color: var(--blue); font-size: 17px; letter-spacing: -.4px; }
 .s-clear { width: 18px; height: 18px; color: var(--s-dim); opacity: .8; flex: none; }
